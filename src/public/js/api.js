@@ -2,7 +2,7 @@
 
 const API = {
   getToken() {
-    return localStorage.getItem('wms_token');
+    return localStorage.getItem('wms_token') || localStorage.getItem('token');
   },
 
   setToken(token) {

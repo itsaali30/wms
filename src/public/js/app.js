@@ -30,10 +30,23 @@ const app = createApp({
     const toastMessage = ref(null);
     const toastType = ref('success');
 
-    // Modals
+    // Punch-In & Geolocation & Live Camera State
     const showPunchInModal = ref(false);
-    const punchInForm = reactive({ slot: 'General', selfieFile: null });
+    const punchInForm = reactive({ slot: 'General', lat: null, long: null, accuracy: null, selfieFile: null, selfieData: null });
     const selfiePreview = ref(null);
+    const gpsStatusText = ref('Auto-detecting live GPS location...');
+    const isAutoFetchingGps = ref(false);
+    const liveCameraActive = ref(false);
+    let liveCameraStream = null;
+    const punchInCodeInput = ref('');
+    const isSubmittingPunchIn = ref(false);
+    const breakSecondsLeft = ref(900); // 15 mins default
+    let breakTimerInterval = null;
+    const breakCountdownText = computed(() => {
+      const m = Math.floor(breakSecondsLeft.value / 60);
+      const s = String(breakSecondsLeft.value % 60).padStart(2, '0');
+      return `${m}:${s}`;
+    });
     const showCameraModal = ref(false);
     let html5QrCode = null;
     let cameraTargetItem = null;
@@ -48,6 +61,147 @@ const app = createApp({
     const putterTab = ref('dock');
     const putawayTasks = ref([]);
     const reversePutawayList = ref([]);
+
+    // Live Floor Putaway State
+    const floorItems = ref([]);
+    const isLoadingFloorItems = ref(false);
+    const selectedPutawayItem = ref(null);
+    const candidateShelves = ref([]);
+    const shelfFilter = ref('all'); // 'all' | 'empty' | 'occupied'
+    const selectedTargetShelf = ref(null);
+    const scannedShelfInput = ref('');
+    const putawayQty = ref(1);
+    const isSubmittingPutaway = ref(false);
+    const putawaySuccessData = ref(null);
+
+    const emptyShelvesCount = computed(() => {
+      return candidateShelves.value.filter(s => s.isEmpty).length;
+    });
+
+    const occupiedShelvesCount = computed(() => {
+      return candidateShelves.value.filter(s => !s.isEmpty).length;
+    });
+
+    const filteredCandidateShelves = computed(() => {
+      if (shelfFilter.value === 'empty') {
+        return candidateShelves.value.filter(s => s.isEmpty);
+      }
+      if (shelfFilter.value === 'occupied') {
+        return candidateShelves.value.filter(s => !s.isEmpty);
+      }
+      return candidateShelves.value;
+    });
+
+    async function fetchFloorItems() {
+      isLoadingFloorItems.value = true;
+      try {
+        const res = await API.request('/api/putaway/floor-items');
+        if (res.success) {
+          floorItems.value = res.items || [];
+        }
+      } catch (err) {
+        showToast('Error loading floor items: ' + err.message, 'error');
+      } finally {
+        isLoadingFloorItems.value = false;
+      }
+    }
+
+    async function openPutawayItem(variantId) {
+      selectedTargetShelf.value = null;
+      scannedShelfInput.value = '';
+      putawaySuccessData.value = null;
+      putawayQty.value = 1;
+
+      try {
+        const res = await API.request(`/api/putaway/item-details/${variantId}`);
+        if (res.success) {
+          selectedPutawayItem.value = res.item;
+          candidateShelves.value = res.shelves || [];
+          putawayQty.value = Math.min(10, res.item.floorQty || 1);
+          activeWorkflowStep.value = 'putaway_item';
+          syncRouteHash();
+        } else {
+          showToast(res.message || 'Item details not found', 'error');
+        }
+      } catch (err) {
+        showToast('Error fetching item details: ' + err.message, 'error');
+      }
+    }
+
+    function selectTargetShelf(shelf) {
+      selectedTargetShelf.value = shelf;
+      scannedShelfInput.value = shelf.shelfCode;
+      showToast(`Selected Shelf [${shelf.shelfCode}]. Purana stock: ${shelf.currentStockForThisItem || 0}`, 'info');
+    }
+
+    function onShelfCodeEntered() {
+      if (!scannedShelfInput.value) return;
+      const code = scannedShelfInput.value.trim().toUpperCase();
+      const match = candidateShelves.value.find(s => (s.shelfCode || '').toUpperCase() === code);
+      if (match) {
+        selectTargetShelf(match);
+      } else {
+        showToast(`Shelf [${code}] not found in candidate list. Check shelf code.`, 'warning');
+      }
+    }
+
+    async function executePutaway() {
+      if (!selectedPutawayItem.value || !selectedTargetShelf.value) {
+        showToast('Please select or scan a target shelf first.', 'warning');
+        return;
+      }
+      const qty = parseInt(putawayQty.value);
+      if (isNaN(qty) || qty <= 0) {
+        showToast('Please enter a valid quantity greater than 0.', 'warning');
+        return;
+      }
+      if (qty > (selectedPutawayItem.value.floorQty || 0)) {
+        showToast(`Cannot put away more than available floor stock (${selectedPutawayItem.value.floorQty}).`, 'warning');
+        return;
+      }
+
+      isSubmittingPutaway.value = true;
+      try {
+        const payload = {
+          variantId: selectedPutawayItem.value.variantId,
+          fromStoreId: selectedPutawayItem.value.floorStoreId,
+          fromShelfId: selectedPutawayItem.value.floorShelfId,
+          toShelfId: selectedTargetShelf.value.shelfId,
+          toShelfCode: selectedTargetShelf.value.shelfCode,
+          quantity: qty
+        };
+
+        const res = await API.request('/api/putaway/execute', {
+          method: 'POST',
+          body: JSON.stringify(payload)
+        });
+
+        if (res.success) {
+          putawaySuccessData.value = res;
+          showToast(res.message, 'success');
+          API.playBeep(true);
+          // Update local state
+          selectedPutawayItem.value.floorQty = res.remainingFloorStock;
+          selectedTargetShelf.value.currentStockForThisItem = res.newShelfStock;
+          selectedTargetShelf.value.totalUnitsOnShelf = (selectedTargetShelf.value.totalUnitsOnShelf || 0) + qty;
+          selectedTargetShelf.value.isEmpty = false;
+          // Refresh floor items in background
+          fetchFloorItems();
+        } else {
+          showToast(res.message || 'Putaway failed', 'error');
+        }
+      } catch (err) {
+        showToast('Putaway execution error: ' + err.message, 'error');
+      } finally {
+        isSubmittingPutaway.value = false;
+      }
+    }
+
+    function goToPutaway() {
+      activeWorkflowStep.value = 'putaway_list';
+      fetchFloorItems();
+      syncRouteHash();
+    }
 
     // 3. Inward State
     const purchaseOrders = ref([]);
@@ -263,7 +417,6 @@ const app = createApp({
             socket.emit('join', { userId: user.value.userId, role: user.value.role });
           }
           loadTabContent();
-          fetchFullProfile();
 
           // Route access: if logged in, access in WMS goes to Home (step4)
           handleRouteAccess();
@@ -308,10 +461,15 @@ const app = createApp({
           }
           showToast(`Welcome ${user.value.name}! Terminal active.`);
           loadTabContent();
-          fetchFullProfile();
 
-          // Route access: if logged in, route directly to Home (step4)
-          navigateToStep('step4');
+          // Route access: if logged in, only open punch-in if duty is not active
+          if (duty.duty === 'ON' || duty.onBreak) {
+            navigateToStep('step4');
+          } else if (duty.requiresCode || duty.duty === 'PENDING_APPROVAL') {
+            navigateToStep('punchin_code');
+          } else {
+            navigateToStep('punchin');
+          }
         }
       } catch (err) {
         loginError.value = err.message;
@@ -447,6 +605,268 @@ const app = createApp({
         API.playBeep(false);
       } finally {
         isVerifyingCode.value = false;
+      }
+    }
+
+    // ==========================================
+    // PUNCH-IN: LIVE CAMERA & AUTO GEOLOCATION & 4-DIGIT CODE
+    // ==========================================
+    function autoGetGeolocation() {
+      isAutoFetchingGps.value = true;
+      gpsStatusText.value = 'Auto-fetching live GPS location...';
+      if (!navigator.geolocation) {
+        gpsStatusText.value = 'Browser does not support Geolocation. Default coordinates assigned.';
+        punchInForm.lat = 17.385044;
+        punchInForm.long = 78.486671;
+        punchInForm.accuracy = 25;
+        isAutoFetchingGps.value = false;
+        return;
+      }
+      navigator.geolocation.getCurrentPosition(
+        (pos) => {
+          punchInForm.lat = parseFloat(pos.coords.latitude.toFixed(6));
+          punchInForm.long = parseFloat(pos.coords.longitude.toFixed(6));
+          punchInForm.accuracy = Math.round(pos.coords.accuracy || 10);
+          gpsStatusText.value = `📍 GPS Live: Lat ${punchInForm.lat}, Long ${punchInForm.long} (±${punchInForm.accuracy}m)`;
+          isAutoFetchingGps.value = false;
+        },
+        (err) => {
+          console.warn('Geolocation error:', err.message);
+          punchInForm.lat = 17.385044;
+          punchInForm.long = 78.486671;
+          punchInForm.accuracy = 50;
+          gpsStatusText.value = `📍 GPS Defaulted: Lat ${punchInForm.lat}, Long ${punchInForm.long} (${err.message})`;
+          isAutoFetchingGps.value = false;
+        },
+        { enableHighAccuracy: true, timeout: 8000, maximumAge: 0 }
+      );
+    }
+
+    async function startLiveCamera() {
+      try {
+        if (liveCameraStream) {
+          liveCameraStream.getTracks().forEach(t => t.stop());
+          liveCameraStream = null;
+        }
+        const stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: 'user', width: { ideal: 640 }, height: { ideal: 480 } },
+          audio: false
+        });
+        liveCameraStream = stream;
+        liveCameraActive.value = true;
+        nextTick(() => {
+          const videoEl = document.getElementById('punchInLiveVideo');
+          if (videoEl) {
+            videoEl.srcObject = stream;
+            videoEl.play().catch(e => console.warn('Video play err:', e));
+          }
+        });
+      } catch (err) {
+        console.warn('Live camera error:', err.message);
+        liveCameraActive.value = false;
+      }
+    }
+
+    function captureLiveSelfie() {
+      const videoEl = document.getElementById('punchInLiveVideo');
+      if (!videoEl) {
+        showToast('Camera video stream is not active', 'warning');
+        return;
+      }
+      try {
+        const canvas = document.createElement('canvas');
+        canvas.width = videoEl.videoWidth || 640;
+        canvas.height = videoEl.videoHeight || 480;
+        const ctx = canvas.getContext('2d');
+        ctx.drawImage(videoEl, 0, 0, canvas.width, canvas.height);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        selfiePreview.value = dataUrl;
+        punchInForm.selfieData = dataUrl;
+
+        // Stop camera stream once captured
+        if (liveCameraStream) {
+          liveCameraStream.getTracks().forEach(t => t.stop());
+          liveCameraStream = null;
+        }
+        liveCameraActive.value = false;
+        showToast('📸 Live selfie captured successfully!', 'success');
+      } catch (err) {
+        showToast('Failed to capture frame: ' + err.message, 'error');
+      }
+    }
+
+    function retakeLiveSelfie() {
+      selfiePreview.value = null;
+      punchInForm.selfieData = null;
+      punchInForm.selfieFile = null;
+      startLiveCamera();
+    }
+
+    async function submitPunchInFlow() {
+      if (!selfiePreview.value && !punchInForm.selfieData && !punchInForm.selfieFile) {
+        showToast('Kripya selfie photo capture karein!', 'warning');
+        return;
+      }
+      isSubmittingPunchIn.value = true;
+      try {
+        const payload = {
+          slot: punchInForm.slot || 'General',
+          lat: punchInForm.lat || 17.385044,
+          long: punchInForm.long || 78.486671,
+          selfieData: punchInForm.selfieData || selfiePreview.value
+        };
+
+        const res = await API.request('/api/auth/punch-in', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload)
+        });
+
+        if (res.success) {
+          Object.assign(duty, res.duty);
+          duty.dutyId = res.dutyId;
+          duty.requiresCode = true;
+          duty.duty = 'PENDING_APPROVAL';
+          punchInCodeInput.value = '';
+          showToast(res.message, 'success');
+          activeWorkflowStep.value = 'punchin_code';
+          syncRouteHash();
+        } else {
+          showToast(res.message || 'Punch-in submission failed', 'error');
+        }
+      } catch (err) {
+        showToast('Error during punch-in: ' + err.message, 'error');
+      } finally {
+        isSubmittingPunchIn.value = false;
+      }
+    }
+
+    async function submit4DigitCode() {
+      const code = punchInCodeInput.value ? punchInCodeInput.value.trim() : '';
+      if (!code || code.length !== 4) {
+        showToast('Kripya 4-digit code enter karein!', 'warning');
+        return;
+      }
+      isVerifyingCode.value = true;
+      try {
+        const res = await API.request('/api/auth/verify-duty-code', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            code,
+            dutyId: duty.dutyId
+          })
+        });
+
+        if (res.success) {
+          Object.assign(duty, res.duty);
+          duty.duty = 'ON';
+          duty.requiresCode = false;
+          showToast('✅ 4-Digit Security Code Approved! Shift unlocked.', 'success');
+          activeWorkflowStep.value = 'step4';
+          dashboardSegment.value = 'tasks';
+          syncRouteHash();
+        } else {
+          showToast(res.message || 'Invalid approval code', 'error');
+        }
+      } catch (err) {
+        showToast(err.message, 'error');
+      } finally {
+        isVerifyingCode.value = false;
+      }
+    }
+
+    // ==========================================
+    // TOP-RIGHT DUTY OFF & 15-MINUTE BREAK
+    // ==========================================
+    function openDutyOffModal() {
+      const modalEl = document.getElementById('dutyOffModal');
+      if (modalEl && window.bootstrap) {
+        const modal = bootstrap.Modal.getOrCreateInstance(modalEl);
+        modal.show();
+      }
+    }
+
+    async function confirmDutyOff() {
+      const modalEl = document.getElementById('dutyOffModal');
+      if (modalEl && window.bootstrap) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+      }
+      try {
+        const res = await API.request('/api/auth/punch-out', { method: 'POST' });
+        if (res.success) {
+          Object.assign(duty, res.duty);
+          duty.duty = 'OFF';
+          duty.onBreak = false;
+          stopBreakTimer();
+          showToast('🛑 Duty OFF! Shift punched out successfully.', 'info');
+          activeWorkflowStep.value = 'punchin';
+          syncRouteHash();
+          nextTick(() => {
+            autoGetGeolocation();
+            startLiveCamera();
+          });
+        }
+      } catch (err) {
+        showToast('Error during punch out: ' + err.message, 'error');
+      }
+    }
+
+    async function start15MinBreak() {
+      const modalEl = document.getElementById('dutyOffModal');
+      if (modalEl && window.bootstrap) {
+        const modal = bootstrap.Modal.getInstance(modalEl);
+        if (modal) modal.hide();
+      }
+      try {
+        const res = await API.request('/api/auth/break-start', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ breakType: 'Tea (15m)' })
+        });
+        if (res.success) {
+          Object.assign(duty, res.duty);
+          duty.onBreak = true;
+          showToast('☕ 15-Minute Break Chalu ho gaya! Max 15 min.', 'warning');
+          startBreakTimer();
+        }
+      } catch (err) {
+        showToast('Error starting break: ' + err.message, 'error');
+      }
+    }
+
+    async function resumeDutyFromBreak() {
+      try {
+        const res = await API.request('/api/auth/break-end', { method: 'POST' });
+        if (res.success) {
+          Object.assign(duty, res.duty);
+          duty.onBreak = false;
+          stopBreakTimer();
+          showToast('✅ Break Ended. Duty resumed!', 'success');
+        }
+      } catch (err) {
+        showToast('Error resuming duty: ' + err.message, 'error');
+      }
+    }
+
+    function startBreakTimer() {
+      stopBreakTimer();
+      breakSecondsLeft.value = 15 * 60; // 900 seconds
+      breakTimerInterval = setInterval(() => {
+        breakSecondsLeft.value--;
+        if (breakSecondsLeft.value <= 0) {
+          stopBreakTimer();
+          alert('⚠️ Break limit (15 min) exceed ho gayi hai! Security policy ke tehat aap automatically logout ho rahe hain.');
+          logout();
+        }
+      }, 1000);
+    }
+
+    function stopBreakTimer() {
+      if (breakTimerInterval) {
+        clearInterval(breakTimerInterval);
+        breakTimerInterval = null;
       }
     }
 
@@ -1223,11 +1643,14 @@ const app = createApp({
     }
 
     function selectHeroTask(taskName) {
+      if (taskName === 'putter') {
+        goToPutaway();
+        return;
+      }
       currentTab.value = taskName;
       activeWorkflowStep.value = 'active_task';
       bottomNav.value = 'tasks';
       if (taskName === 'picker') fetchPickerTask();
-      else if (taskName === 'putter') fetchPutawayTasks();
       else if (taskName === 'transfer') fetchTransferData();
       else if (taskName === 'packer') fetchPackerOrders();
       else if (taskName === 'inward') fetchInwardData();
@@ -1261,590 +1684,8 @@ const app = createApp({
       }
     }
 
-    // ==========================================
-    // PROFILE MANAGEMENT (MATCHING MAJOR APP PROFILE)
-    // ==========================================
-    const profileSubView = ref('main'); // 'main' | 'bank' | 'doc' | 'nominee' | 'location' | 'reset-password'
-    const profileLoading = ref(false);
-    const profileError = ref(null);
-    const profileData = ref({
-      UserID: null,
-      UserNameFirst: '',
-      UserNameLast: '',
-      Email: '',
-      Mobile: '',
-      DOB: null,
-      Gender: '',
-      Role: '',
-      IsActive: true,
-      IsApproved: false,
-      CreatedAt: null,
-      ProfileImageUrl: null,
-      CurrentWarehouseName: 'Not Assigned',
-      CurrentStoreName: 'Not Assigned'
-    });
-
-    const profileEditMode = ref(false);
-    const profileSaving = ref(false);
-    const profileSaveError = ref(null);
-    const profileSaveSuccess = ref(null);
-    const profileEditForm = reactive({
-      UserNameFirst: '',
-      UserNameLast: '',
-      Email: '',
-      Mobile: '',
-      DOB: '',
-      Gender: 'other'
-    });
-
-    const profileUploading = ref(false);
-    const profileUploadError = ref(null);
-    const profileUploadSuccess = ref(null);
-
-    const passwordForm = reactive({
-      currentPassword: '',
-      newPassword: '',
-      confirmPassword: ''
-    });
-    const passwordLoading = ref(false);
-    const passwordError = ref(null);
-    const passwordSuccess = ref(null);
-
-    // Bank Accounts State
-    const bankAccounts = ref([]);
-    const bankLoading = ref(false);
-    const showBankModal = ref(false);
-    const bankSaving = ref(false);
-    const bankSaveError = ref(null);
-    const bankUploadingProof = ref(false);
-    const bankForm = reactive({
-      BankName: '',
-      AccountNo: '',
-      IFSC: '',
-      UPI: '',
-      IsPrimary: false,
-      BankImageUrl: ''
-    });
-
-    // Documents State
-    const documents = ref([]);
-    const docLoading = ref(false);
-    const showDocModal = ref(false);
-    const docSaving = ref(false);
-    const docSaveError = ref(null);
-    const docUploadingFile = ref(false);
-    const docTypes = ['Aadhaar Card', 'PAN Card', 'Driving License', 'Voter ID', 'Passport', 'Other'];
-    const docForm = reactive({
-      Type: '',
-      Number: '',
-      ImageURL: ''
-    });
-
-    // Nominees State
-    const nominees = ref([]);
-    const nomineeLoading = ref(false);
-    const showNomineeModal = ref(false);
-    const nomineeSaving = ref(false);
-    const nomineeSaveError = ref(null);
-    const nomineeEditMode = ref(false);
-    const nomineeEditingId = ref(null);
-    const nomineeForm = reactive({
-      NomineeName: '',
-      Relation: 'Spouse',
-      DOB: '',
-      Phone: '',
-      EmergencyPhone: '',
-      Address: ''
-    });
-
-    // Location Change State
-    const warehouses = ref([]);
-    const locationRequests = ref([]);
-    const locationLoading = ref(false);
-    const locationSubmitting = ref(false);
-    const locationError = ref(null);
-    const locationSuccess = ref(null);
-    const locationForm = reactive({
-      NewLocationID: '',
-      Reason: '',
-      Type: 'warehouse'
-    });
-
-    function formatProfileDate(dateString) {
-      if (!dateString) return 'N/A';
-      const num = Number(dateString);
-      const date = !isNaN(num) && num > 1000000000 ? new Date(num) : new Date(dateString);
-      if (isNaN(date.getTime())) return 'N/A';
-      return date.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', day: '2-digit', month: 'short', year: 'numeric' });
-    }
-
-    async function fetchFullProfile() {
-      profileLoading.value = true;
-      profileError.value = null;
-      try {
-        const res = await API.request('/api/profile/me');
-        if (res.success && res.user) {
-          profileData.value = res.user;
-          profileEditForm.UserNameFirst = res.user.UserNameFirst || '';
-          profileEditForm.UserNameLast = res.user.UserNameLast || '';
-          profileEditForm.Email = res.user.Email || '';
-          profileEditForm.Mobile = res.user.Mobile || '';
-          profileEditForm.DOB = res.user.DOB ? res.user.DOB.split('T')[0] : '';
-          profileEditForm.Gender = res.user.Gender || 'other';
-
-          if (user.value) {
-            user.value.name = `${res.user.UserNameFirst} ${res.user.UserNameLast || ''}`.trim();
-            user.value.profileImage = res.user.ProfileImageUrl;
-            user.value.email = res.user.Email;
-            user.value.mobile = res.user.Mobile;
-            API.setUser(user.value);
-          }
-        }
-      } catch (err) {
-        profileError.value = err.message || 'Failed to load profile';
-      } finally {
-        profileLoading.value = false;
-      }
-    }
-
-    function toggleProfileEdit() {
-      profileEditMode.value = !profileEditMode.value;
-      profileSaveError.value = null;
-      profileSaveSuccess.value = null;
-      if (!profileEditMode.value && profileData.value) {
-        profileEditForm.UserNameFirst = profileData.value.UserNameFirst || '';
-        profileEditForm.UserNameLast = profileData.value.UserNameLast || '';
-        profileEditForm.Email = profileData.value.Email || '';
-        profileEditForm.Mobile = profileData.value.Mobile || '';
-        profileEditForm.DOB = profileData.value.DOB ? profileData.value.DOB.split('T')[0] : '';
-        profileEditForm.Gender = profileData.value.Gender || 'other';
-      }
-    }
-
-    async function saveProfile() {
-      profileSaving.value = true;
-      profileSaveError.value = null;
-      profileSaveSuccess.value = null;
-      try {
-        const res = await API.request('/api/profile', {
-          method: 'PUT',
-          body: JSON.stringify(profileEditForm)
-        });
-        if (res.success) {
-          profileSaveSuccess.value = 'Profile updated successfully!';
-          profileEditMode.value = false;
-          await fetchFullProfile();
-          showToast('Profile updated successfully!', 'success');
-          setTimeout(() => { profileSaveSuccess.value = null; }, 3000);
-        }
-      } catch (err) {
-        profileSaveError.value = err.message || 'Failed to update profile';
-        showToast(profileSaveError.value, 'error');
-      } finally {
-        profileSaving.value = false;
-      }
-    }
-
-    async function handleProfileImageUpload(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-
-      if (file.size > 5 * 1024 * 1024) {
-        profileUploadError.value = 'Image size must be less than 5MB';
-        showToast('Image size must be less than 5MB', 'error');
-        return;
-      }
-
-      profileUploading.value = true;
-      profileUploadError.value = null;
-      profileUploadSuccess.value = null;
-
-      const formData = new FormData();
-      formData.append('image', file);
-
-      try {
-        const res = await API.request('/api/profile/upload-image', {
-          method: 'POST',
-          body: formData
-        });
-        if (res.success) {
-          profileData.value.ProfileImageUrl = res.imageUrl;
-          if (user.value) {
-            user.value.profileImage = res.imageUrl;
-            API.setUser(user.value);
-          }
-          profileUploadSuccess.value = 'Profile image updated successfully!';
-          showToast('Profile picture uploaded!', 'success');
-          setTimeout(() => { profileUploadSuccess.value = null; }, 3000);
-        }
-      } catch (err) {
-        profileUploadError.value = err.message || 'Image upload failed';
-        showToast(profileUploadError.value, 'error');
-      } finally {
-        profileUploading.value = false;
-        event.target.value = '';
-      }
-    }
-
-    async function changePassword() {
-      passwordError.value = null;
-      passwordSuccess.value = null;
-
-      if (passwordForm.newPassword !== passwordForm.confirmPassword) {
-        passwordError.value = 'New passwords do not match';
-        return;
-      }
-      if (passwordForm.newPassword.length < 6) {
-        passwordError.value = 'Password must be at least 6 characters';
-        return;
-      }
-      if (passwordForm.currentPassword === passwordForm.newPassword) {
-        passwordError.value = 'New password must be different from current password';
-        return;
-      }
-
-      passwordLoading.value = true;
-      try {
-        const res = await API.request('/api/profile/change-password', {
-          method: 'POST',
-          body: JSON.stringify({
-            currentPassword: passwordForm.currentPassword,
-            newPassword: passwordForm.newPassword
-          })
-        });
-        if (res.success) {
-          passwordSuccess.value = 'Password updated successfully!';
-          passwordForm.currentPassword = '';
-          passwordForm.newPassword = '';
-          passwordForm.confirmPassword = '';
-          showToast('Password updated successfully!', 'success');
-          setTimeout(() => { openProfileSubView('main'); }, 1500);
-        }
-      } catch (err) {
-        passwordError.value = err.message || 'Failed to update password';
-        showToast(passwordError.value, 'error');
-      } finally {
-        passwordLoading.value = false;
-      }
-    }
-
-    // Bank Accounts Methods
-    async function fetchBankAccounts() {
-      bankLoading.value = true;
-      try {
-        const res = await API.request('/api/profile/bank');
-        if (res.success) {
-          bankAccounts.value = res.bankAccounts || [];
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        bankLoading.value = false;
-      }
-    }
-
-    function openAddBankModal() {
-      bankForm.BankName = '';
-      bankForm.AccountNo = '';
-      bankForm.IFSC = '';
-      bankForm.UPI = '';
-      bankForm.IsPrimary = false;
-      bankForm.BankImageUrl = '';
-      bankSaveError.value = null;
-      showBankModal.value = true;
-    }
-
-    async function handleBankProofUpload(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      bankUploadingProof.value = true;
-      const formData = new FormData();
-      formData.append('image', file);
-      try {
-        const res = await API.request('/api/profile/bank/upload-proof', {
-          method: 'POST',
-          body: formData
-        });
-        if (res.success) {
-          bankForm.BankImageUrl = res.imageUrl;
-          showToast('Proof document uploaded!', 'success');
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        bankUploadingProof.value = false;
-        event.target.value = '';
-      }
-    }
-
-    async function saveBankAccount() {
-      bankSaving.value = true;
-      bankSaveError.value = null;
-      try {
-        const res = await API.request('/api/profile/bank', {
-          method: 'POST',
-          body: JSON.stringify(bankForm)
-        });
-        if (res.success) {
-          showToast('Bank account submitted for approval!', 'success');
-          showBankModal.value = false;
-          await fetchBankAccounts();
-        }
-      } catch (err) {
-        bankSaveError.value = err.message || 'Failed to add bank account';
-      } finally {
-        bankSaving.value = false;
-      }
-    }
-
-    async function deleteBankAccount(bankId) {
-      if (!confirm('Are you sure you want to delete this bank account?')) return;
-      try {
-        const res = await API.request(`/api/profile/bank/${bankId}`, { method: 'DELETE' });
-        if (res.success) {
-          showToast('Bank account removed', 'success');
-          await fetchBankAccounts();
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      }
-    }
-
-    // Document Methods
-    async function fetchDocuments() {
-      docLoading.value = true;
-      try {
-        const res = await API.request('/api/profile/documents');
-        if (res.success) {
-          documents.value = res.documents || [];
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        docLoading.value = false;
-      }
-    }
-
-    function openAddDocModal() {
-      docForm.Type = '';
-      docForm.Number = '';
-      docForm.ImageURL = '';
-      docSaveError.value = null;
-      showDocModal.value = true;
-    }
-
-    async function handleDocFileUpload(event) {
-      const file = event.target.files && event.target.files[0];
-      if (!file) return;
-      docUploadingFile.value = true;
-      const formData = new FormData();
-      formData.append('image', file);
-      try {
-        const res = await API.request('/api/profile/documents/upload', {
-          method: 'POST',
-          body: formData
-        });
-        if (res.success) {
-          docForm.ImageURL = res.imageUrl;
-          showToast('Document uploaded!', 'success');
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        docUploadingFile.value = false;
-        event.target.value = '';
-      }
-    }
-
-    async function saveDocument() {
-      docSaving.value = true;
-      docSaveError.value = null;
-      try {
-        const res = await API.request('/api/profile/documents', {
-          method: 'POST',
-          body: JSON.stringify(docForm)
-        });
-        if (res.success) {
-          showToast('Document submitted for approval!', 'success');
-          showDocModal.value = false;
-          await fetchDocuments();
-        }
-      } catch (err) {
-        docSaveError.value = err.message || 'Failed to submit document';
-      } finally {
-        docSaving.value = false;
-      }
-    }
-
-    async function deleteDocument(docId) {
-      if (!confirm('Are you sure you want to delete this document?')) return;
-      try {
-        const res = await API.request(`/api/profile/documents/${docId}`, { method: 'DELETE' });
-        if (res.success) {
-          showToast('Document removed', 'success');
-          await fetchDocuments();
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      }
-    }
-
-    // Nominee Methods
-    async function fetchNominees() {
-      nomineeLoading.value = true;
-      try {
-        const res = await API.request('/api/profile/nominees');
-        if (res.success) {
-          nominees.value = res.nominees || [];
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      } finally {
-        nomineeLoading.value = false;
-      }
-    }
-
-    function openAddNomineeModal() {
-      nomineeEditMode.value = false;
-      nomineeEditingId.value = null;
-      nomineeForm.NomineeName = '';
-      nomineeForm.Relation = 'Spouse';
-      nomineeForm.DOB = '';
-      nomineeForm.Phone = '';
-      nomineeForm.EmergencyPhone = '';
-      nomineeForm.Address = '';
-      nomineeSaveError.value = null;
-      showNomineeModal.value = true;
-    }
-
-    function openEditNomineeModal(nominee) {
-      nomineeEditMode.value = true;
-      nomineeEditingId.value = nominee.NomineeID;
-      nomineeForm.NomineeName = nominee.NomineeName || '';
-      nomineeForm.Relation = nominee.Relation || 'Spouse';
-      nomineeForm.DOB = nominee.DOB ? nominee.DOB.split('T')[0] : '';
-      nomineeForm.Phone = nominee.Phone || '';
-      nomineeForm.EmergencyPhone = nominee.EmergencyPhone || '';
-      nomineeForm.Address = nominee.Address || '';
-      nomineeSaveError.value = null;
-      showNomineeModal.value = true;
-    }
-
-    async function saveNominee() {
-      nomineeSaving.value = true;
-      nomineeSaveError.value = null;
-      try {
-        const endpoint = nomineeEditMode.value ? `/api/profile/nominees/${nomineeEditingId.value}` : '/api/profile/nominees';
-        const method = nomineeEditMode.value ? 'PUT' : 'POST';
-        const res = await API.request(endpoint, {
-          method,
-          body: JSON.stringify(nomineeForm)
-        });
-        if (res.success) {
-          showToast(nomineeEditMode.value ? 'Nominee updated!' : 'Nominee added successfully!', 'success');
-          showNomineeModal.value = false;
-          await fetchNominees();
-        }
-      } catch (err) {
-        nomineeSaveError.value = err.message || 'Failed to save nominee';
-      } finally {
-        nomineeSaving.value = false;
-      }
-    }
-
-    async function deleteNominee(nomineeId) {
-      if (!confirm('Are you sure you want to delete this nominee?')) return;
-      try {
-        const res = await API.request(`/api/profile/nominees/${nomineeId}`, { method: 'DELETE' });
-        if (res.success) {
-          showToast('Nominee removed', 'success');
-          await fetchNominees();
-        }
-      } catch (err) {
-        showToast(err.message, 'error');
-      }
-    }
-
-    // Location Change Methods
-    async function fetchLocationData() {
-      locationLoading.value = true;
-      locationError.value = null;
-      try {
-        const [wRes, reqRes] = await Promise.all([
-          API.request('/api/profile/warehouses'),
-          API.request('/api/profile/location-requests')
-        ]);
-        if (wRes.success) warehouses.value = wRes.warehouses || [];
-        if (reqRes.success) locationRequests.value = reqRes.requests || [];
-      } catch (err) {
-        locationError.value = err.message || 'Failed to load location details';
-      } finally {
-        locationLoading.value = false;
-      }
-    }
-
-    async function submitLocationRequest() {
-      locationSubmitting.value = true;
-      locationError.value = null;
-      locationSuccess.value = null;
-      try {
-        const res = await API.request('/api/profile/location-requests', {
-          method: 'POST',
-          body: JSON.stringify(locationForm)
-        });
-        if (res.success) {
-          locationSuccess.value = 'Warehouse change request submitted for management review!';
-          showToast('Transfer request submitted!', 'success');
-          locationForm.NewLocationID = '';
-          locationForm.Reason = '';
-          await fetchLocationData();
-        }
-      } catch (err) {
-        locationError.value = err.message || 'Failed to submit request';
-      } finally {
-        locationSubmitting.value = false;
-      }
-    }
-
-    function openProfileSubView(subview) {
-      profileSubView.value = subview;
-      if (subview === 'bank') fetchBankAccounts();
-      else if (subview === 'doc') fetchDocuments();
-      else if (subview === 'nominee') fetchNominees();
-      else if (subview === 'location') fetchLocationData();
-      else if (subview === 'reset-password') {
-        passwordForm.currentPassword = '';
-        passwordForm.newPassword = '';
-        passwordForm.confirmPassword = '';
-        passwordError.value = null;
-        passwordSuccess.value = null;
-      } else if (subview === 'main') {
-        fetchFullProfile();
-      }
-      syncRouteHash();
-    }
-
-    function selectSegment(segment) {
-      dashboardSegment.value = segment;
-      if (segment === 'profile') {
-        profileSubView.value = 'main';
-        fetchFullProfile();
-      }
-      syncRouteHash();
-    }
-
     // Route Access Guard & Navigation Handler
     function navigateToStep(step, segment = null) {
-      // Guard: if logged in and trying to access step1 (Auth/Login/Signup), route goes to Home (step4)
-      if (isLoggedIn.value && step === 'step1') {
-        activeWorkflowStep.value = 'step4';
-        bottomNav.value = 'home';
-        if (segment) dashboardSegment.value = segment;
-        syncRouteHash();
-        showToast(`Already logged in as ${user.value.name || user.value.email || 'User'}. Redirected to Home.`, 'info');
-        return;
-      }
-
       // Guard: if NOT logged in and trying to access internal steps, route goes to login (step1)
       if (!isLoggedIn.value && step !== 'step1') {
         activeWorkflowStep.value = 'step1';
@@ -1853,13 +1694,33 @@ const app = createApp({
         return;
       }
 
+      // If logged in:
+      if (isLoggedIn.value) {
+        if (step === 'step1') {
+          // If not active on duty, send to punchin
+          if (duty.duty !== 'ON' && !duty.onBreak) {
+            step = (duty.requiresCode || duty.duty === 'PENDING_APPROVAL') ? 'punchin_code' : 'punchin';
+          } else {
+            step = 'step4';
+          }
+        }
+
+        // Strict Duty Guard: If NOT active on duty and not on break, ONLY allow punchin or punchin_code!
+        if (duty.duty !== 'ON' && !duty.onBreak && step !== 'punchin' && step !== 'punchin_code') {
+          step = (duty.requiresCode || duty.duty === 'PENDING_APPROVAL') ? 'punchin_code' : 'punchin';
+          showToast('Pehle shift Punch-In karein aur Duty unlock karein!', 'warning');
+        }
+      }
+
       activeWorkflowStep.value = step;
       if (step === 'step4') {
         bottomNav.value = segment === 'profile' ? 'profile' : 'home';
-        if (segment) {
-          dashboardSegment.value = segment;
-          if (segment === 'profile') fetchFullProfile();
-        }
+        if (segment) dashboardSegment.value = segment;
+      } else if (step === 'punchin') {
+        nextTick(() => {
+          autoGetGeolocation();
+          startLiveCamera();
+        });
       }
       syncRouteHash();
     }
@@ -1868,23 +1729,22 @@ const app = createApp({
       let targetHash = '#/home';
       if (activeWorkflowStep.value === 'step1') {
         targetHash = authMode.value === 'signup' ? '#/signup' : (authMode.value === 'forgot' ? '#/forgot' : '#/login');
+      } else if (activeWorkflowStep.value === 'punchin') {
+        targetHash = '#/punchin';
+      } else if (activeWorkflowStep.value === 'punchin_code') {
+        targetHash = '#/punchin/code';
       } else if (activeWorkflowStep.value === 'step2') {
         targetHash = '#/salary';
       } else if (activeWorkflowStep.value === 'step3') {
         targetHash = '#/slots';
       } else if (activeWorkflowStep.value === 'step4') {
-        if (dashboardSegment.value === 'profile') {
-          if (profileSubView.value === 'bank') targetHash = '#/profile/bank';
-          else if (profileSubView.value === 'doc') targetHash = '#/profile/doc';
-          else if (profileSubView.value === 'nominee') targetHash = '#/profile/nominee';
-          else if (profileSubView.value === 'location') targetHash = '#/profile/change-location';
-          else if (profileSubView.value === 'reset-password') targetHash = '#/profile/reset-password';
-          else targetHash = '#/profile';
-        } else {
-          targetHash = '#/home';
-        }
+        targetHash = dashboardSegment.value === 'profile' ? '#/profile' : '#/home';
       } else if (activeWorkflowStep.value === 'active_task') {
         targetHash = '#/tasks';
+      } else if (activeWorkflowStep.value === 'putaway_list') {
+        targetHash = '#/putaway';
+      } else if (activeWorkflowStep.value === 'putaway_item') {
+        targetHash = `#/putaway/itemlist/${selectedPutawayItem.value?.variantId || ''}`;
       }
       if (window.location.hash !== targetHash) {
         try {
@@ -1894,41 +1754,46 @@ const app = createApp({
     }
 
     function handleRouteAccess() {
-      const hash = (window.location.hash || '').toLowerCase();
+      const rawHash = window.location.hash || '';
+      const rawPath = window.location.pathname || '';
+      const hash = rawHash.toLowerCase();
+
       if (isLoggedIn.value) {
-        // If logged in: any access to login/auth/step1 goes to Home
-        if (!hash || hash === '' || hash === '#/' || hash === '#/login' || hash === '#/signup' || hash === '#/forgot' || hash === '#/auth' || hash === '#/step1' || hash === '#/home') {
-          navigateToStep('step4');
-        } else if (hash === '#/step2' || hash === '#/salary' || hash === '#/approvals') {
-          navigateToStep('step2');
-        } else if (hash === '#/step3' || hash === '#/slots' || hash === '#/shifts') {
-          navigateToStep('step3');
-        } else if (hash === '#/profile') {
-          navigateToStep('step4', 'profile');
-          profileSubView.value = 'main';
-          fetchFullProfile();
-        } else if (hash === '#/profile/bank') {
-          navigateToStep('step4', 'profile');
-          openProfileSubView('bank');
-        } else if (hash === '#/profile/doc') {
-          navigateToStep('step4', 'profile');
-          openProfileSubView('doc');
-        } else if (hash === '#/profile/nominee') {
-          navigateToStep('step4', 'profile');
-          openProfileSubView('nominee');
-        } else if (hash === '#/profile/change-location') {
-          navigateToStep('step4', 'profile');
-          openProfileSubView('location');
-        } else if (hash === '#/profile/reset-password' || hash === '#/reset-password') {
-          navigateToStep('step4', 'profile');
-          openProfileSubView('reset-password');
-        } else if (hash === '#/packs') {
-          navigateBottom('packs');
-        } else if (hash === '#/tasks') {
-          activeWorkflowStep.value = 'active_task';
-          bottomNav.value = 'tasks';
+        // If logged in: check duty status
+        const isDutyActive = duty.duty === 'ON' || duty.onBreak;
+
+        if (isDutyActive) {
+          // Check Putaway URLs directly
+          if (rawHash.startsWith('#/putaway/itemlist/') || rawPath.startsWith('/putaway/itemlist/')) {
+            const id = rawHash.split('#/putaway/itemlist/')[1] || rawPath.split('/putaway/itemlist/')[1];
+            if (id) {
+              openPutawayItem(parseInt(id));
+              return;
+            }
+          } else if (rawHash.startsWith('#/putaway') || rawPath.startsWith('/putaway')) {
+            goToPutaway();
+            return;
+          } else if (hash === '#/tasks') {
+            activeWorkflowStep.value = 'active_task';
+            bottomNav.value = 'tasks';
+          } else if (hash === '#/profile') {
+            navigateToStep('step4', 'profile');
+          } else if (hash === '#/packs') {
+            navigateBottom('packs');
+          } else if (hash === '#/punchin' || hash === '#/putchin') {
+            navigateToStep('punchin');
+          } else if (hash === '#/punchin/code' || hash === '#/putchin/code') {
+            navigateToStep('punchin_code');
+          } else {
+            navigateToStep('step4');
+          }
         } else {
-          navigateToStep('step4');
+          // User is logged in BUT NOT on active duty: ONLY open punch-in or punch-in code!
+          if (duty.requiresCode || duty.duty === 'PENDING_APPROVAL' || hash === '#/punchin/code' || hash === '#/putchin/code') {
+            navigateToStep('punchin_code');
+          } else {
+            navigateToStep('punchin');
+          }
         }
       } else {
         // Not logged in: go to step1
@@ -1962,8 +1827,6 @@ const app = createApp({
       } else if (tab === 'profile') {
         activeWorkflowStep.value = 'step4';
         dashboardSegment.value = 'profile';
-        profileSubView.value = 'main';
-        fetchFullProfile();
         syncRouteHash();
       }
     }
@@ -2100,77 +1963,46 @@ const app = createApp({
       fetchAuditLogs,
       openCameraScanner,
       closeCameraScanner,
-      profileSubView,
-      profileLoading,
-      profileError,
-      profileData,
-      profileEditMode,
-      profileSaving,
-      profileSaveError,
-      profileSaveSuccess,
-      profileEditForm,
-      profileUploading,
-      profileUploadError,
-      profileUploadSuccess,
-      passwordForm,
-      passwordLoading,
-      passwordError,
-      passwordSuccess,
-      bankAccounts,
-      bankLoading,
-      showBankModal,
-      bankSaving,
-      bankSaveError,
-      bankUploadingProof,
-      bankForm,
-      documents,
-      docLoading,
-      showDocModal,
-      docSaving,
-      docSaveError,
-      docUploadingFile,
-      docTypes,
-      docForm,
-      nominees,
-      nomineeLoading,
-      showNomineeModal,
-      nomineeSaving,
-      nomineeSaveError,
-      nomineeEditMode,
-      nomineeEditingId,
-      nomineeForm,
-      warehouses,
-      locationRequests,
-      locationLoading,
-      locationSubmitting,
-      locationError,
-      locationSuccess,
-      locationForm,
-      formatProfileDate,
-      fetchFullProfile,
-      toggleProfileEdit,
-      saveProfile,
-      handleProfileImageUpload,
-      changePassword,
-      fetchBankAccounts,
-      openAddBankModal,
-      handleBankProofUpload,
-      saveBankAccount,
-      deleteBankAccount,
-      fetchDocuments,
-      openAddDocModal,
-      handleDocFileUpload,
-      saveDocument,
-      deleteDocument,
-      fetchNominees,
-      openAddNomineeModal,
-      openEditNomineeModal,
-      saveNominee,
-      deleteNominee,
-      fetchLocationData,
-      submitLocationRequest,
-      openProfileSubView,
-      selectSegment
+      // Floor Putaway
+      floorItems,
+      isLoadingFloorItems,
+      selectedPutawayItem,
+      candidateShelves,
+      shelfFilter,
+      selectedTargetShelf,
+      scannedShelfInput,
+      putawayQty,
+      isSubmittingPutaway,
+      putawaySuccessData,
+      emptyShelvesCount,
+      occupiedShelvesCount,
+      filteredCandidateShelves,
+      fetchFloorItems,
+      openPutawayItem,
+      selectTargetShelf,
+      onShelfCodeEntered,
+      executePutaway,
+      goToPutaway,
+      // Punch-In & Duty Break Workflow
+      gpsStatusText,
+      isAutoFetchingGps,
+      liveCameraActive,
+      punchInCodeInput,
+      isSubmittingPunchIn,
+      breakSecondsLeft,
+      breakCountdownText,
+      autoGetGeolocation,
+      startLiveCamera,
+      captureLiveSelfie,
+      retakeLiveSelfie,
+      submitPunchInFlow,
+      submit4DigitCode,
+      openDutyOffModal,
+      confirmDutyOff,
+      start15MinBreak,
+      resumeDutyFromBreak,
+      startBreakTimer,
+      stopBreakTimer
     };
   }
 });

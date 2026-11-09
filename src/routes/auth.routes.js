@@ -273,6 +273,23 @@ router.post('/punch-in', authenticateToken, upload.single('selfie'), async (req,
         { 'Content-Type': req.file.mimetype }
       );
       selfieUrl = `http://${process.env.MINIO_ENDPOINT || 'localhost'}:${process.env.MINIO_PORT || 9000}/${BUCKETS.ATTENDANCE}/${fileName}`;
+    } else if (req.body.selfieData) {
+      try {
+        const base64Data = req.body.selfieData.replace(/^data:image\/\w+;base64,/, '');
+        const buffer = Buffer.from(base64Data, 'base64');
+        const fileName = `selfie_${staff.StaffID}_${Date.now()}.jpg`;
+        await minioClient.putObject(
+          BUCKETS.ATTENDANCE,
+          fileName,
+          buffer,
+          buffer.length,
+          { 'Content-Type': 'image/jpeg' }
+        );
+        selfieUrl = `http://${process.env.MINIO_ENDPOINT || 'localhost'}:${process.env.MINIO_PORT || 9000}/${BUCKETS.ATTENDANCE}/${fileName}`;
+      } catch (minioErr) {
+        console.warn('MinIO upload error for selfie:', minioErr.message);
+        selfieUrl = req.body.selfieData;
+      }
     }
 
     // Create attendance record
@@ -288,6 +305,9 @@ router.post('/punch-in', authenticateToken, upload.single('selfie'), async (req,
       }
     });
 
+    // Auto-generate 4-digit code so Manager / Incharge / Admin can see and give it
+    const initialCode = String(Math.floor(1000 + Math.random() * 9000));
+
     // Create official DutyRecords entry awaiting 4-digit Manager code
     const dutyRecord = await prisma.dutyRecords.create({
       data: {
@@ -298,6 +318,7 @@ router.post('/punch-in', authenticateToken, upload.single('selfie'), async (req,
         PunchInTime: timeStr,
         SelfieUrl: selfieUrl,
         ApprovalStatus: 'PENDING_APPROVAL',
+        ApprovalCode: initialCode,
         TotalHours: 0
       }
     });
@@ -383,19 +404,11 @@ router.post('/verify-duty-code', authenticateToken, async (req, res) => {
       return res.status(404).json({ success: false, message: 'No active punch-in request found. Please punch in first.' });
     }
 
-    // Check if manager has approved yet
-    if (dutyRecord.ApprovalStatus === 'PENDING_APPROVAL') {
-      return res.status(400).json({
-        success: false,
-        message: 'Floor Manager ne abhi tak punch-in approve nahi kiya hai. Kripya Floor Lead se approve karwayein.'
-      });
-    }
-
     // Verify 4-digit code match
-    if (dutyRecord.ApprovalCode !== cleanCode) {
+    if (!dutyRecord.ApprovalCode || dutyRecord.ApprovalCode !== cleanCode) {
       return res.status(400).json({
         success: false,
-        message: '❌ Galat 4-Digit Code! Manager se mila sahi code enter karein.'
+        message: '❌ Galat 4-Digit Code! Floor Manager, Incharge ya Admin se mila sahi code enter karein.'
       });
     }
 

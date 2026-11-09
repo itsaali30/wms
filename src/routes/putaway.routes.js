@@ -7,9 +7,344 @@ const { emitWarehouseEvent } = require('../config/kafka');
 const { emitToRole } = require('../services/socket.service');
 
 router.use(authenticateToken);
-router.use(requireRoles('putter', 'staging', 'manager', 'superadmin', 'admin'));
+router.use(requireRoles('putter', 'staging', 'manager', 'superadmin', 'admin', 'picker', 'incharge'));
 
-// 1. Get dock clearance tasks (Pallets/Crates waiting for put-away)
+// -----------------------------------------------------------------------------
+// LIVE FLOOR PUTAWAY ENDPOINTS (Floor to Dark Store Shelf)
+// -----------------------------------------------------------------------------
+
+// 1. Get Floor Items (Items currently on Floor Store / FL01 Shelf)
+router.get('/floor-items', async (req, res) => {
+  try {
+    const floorStores = await prisma.stores.findMany({
+      where: {
+        OR: [
+          { Type: { equals: 'Floor', mode: 'insensitive' } },
+          { StoreName: { contains: 'Floor', mode: 'insensitive' } }
+        ]
+      }
+    });
+    const floorStoreIds = floorStores.map(s => s.StoreID);
+
+    const floorShelves = await prisma.shelves.findMany({
+      where: {
+        OR: [
+          { ShelfCode: { in: ['FL01', 'FLOOR', 'FL-01'] } },
+          { StoreID: { in: floorStoreIds } }
+        ]
+      }
+    });
+    const floorShelfIds = floorShelves.map(s => s.ShelfID);
+
+    const stocks = await prisma.stocks.findMany({
+      where: {
+        OR: [
+          { StoreID: { in: floorStoreIds }, OnHandQty: { gt: 0 } },
+          { ShelfID: { in: floorShelfIds }, OnHandQty: { gt: 0 } }
+        ]
+      }
+    });
+
+    const items = [];
+    const storeMap = Object.fromEntries(floorStores.map(s => [s.StoreID, s]));
+    const shelfMap = Object.fromEntries(floorShelves.map(s => [s.ShelfID, s]));
+
+    for (const st of stocks) {
+      const v = await prisma.variants.findUnique({ where: { VariantID: st.VariantID } });
+      if (!v) continue;
+      const p = await prisma.products.findUnique({ where: { ProductID: v.ProductID } });
+      const store = storeMap[st.StoreID] || await prisma.stores.findUnique({ where: { StoreID: st.StoreID } });
+      const shelf = shelfMap[st.ShelfID] || await prisma.shelves.findUnique({ where: { ShelfID: st.ShelfID } });
+
+      items.push({
+        stockId: st.StockID,
+        variantId: v.VariantID,
+        productId: v.ProductID,
+        productName: p ? p.ProductName : 'Unknown Item',
+        sku: v.SKU,
+        size: v.Size,
+        color: v.Color,
+        unit: v.Unit || 'PCS',
+        image: v.ImageURL || (p ? p.ImageURL : null),
+        mrp: v.MRP,
+        salePrice: v.SalePrice,
+        floorQty: st.OnHandQty || 0,
+        storeId: st.StoreID,
+        storeName: store ? store.StoreName : 'Floor',
+        shelfId: st.ShelfID,
+        shelfCode: shelf ? shelf.ShelfCode : 'FL01'
+      });
+    }
+
+    res.json({ success: true, count: items.length, items });
+  } catch (err) {
+    console.error('Error fetching floor items:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 2. Get item details + candidate shelves for putaway
+router.get('/item-details/:variantId', async (req, res) => {
+  try {
+    const variantId = parseInt(req.params.variantId);
+    const v = await prisma.variants.findUnique({ where: { VariantID: variantId } });
+    if (!v) {
+      return res.status(404).json({ success: false, message: 'Item not found' });
+    }
+    const p = await prisma.products.findUnique({ where: { ProductID: v.ProductID } });
+
+    // Current stock on floor
+    const floorStores = await prisma.stores.findMany({
+      where: {
+        OR: [
+          { Type: { equals: 'Floor', mode: 'insensitive' } },
+          { StoreName: { contains: 'Floor', mode: 'insensitive' } }
+        ]
+      }
+    });
+    const floorStoreIds = floorStores.map(s => s.StoreID);
+    const floorStock = await prisma.stocks.findFirst({
+      where: {
+        VariantID: variantId,
+        StoreID: { in: floorStoreIds },
+        OnHandQty: { gt: 0 }
+      }
+    });
+
+    // Candidate dark store shelves (Type != Floor)
+    const darkStores = await prisma.stores.findMany({
+      where: { Type: { not: 'Floor' } }
+    });
+    const storeMap = Object.fromEntries(darkStores.map(s => [s.StoreID, s]));
+    const shelves = await prisma.shelves.findMany({
+      where: { StoreID: { in: darkStores.map(s => s.StoreID) } },
+      orderBy: { ShelfID: 'asc' }
+    });
+
+    const shelfList = [];
+    for (const sh of shelves) {
+      const itemStock = await prisma.stocks.findFirst({
+        where: { ShelfID: sh.ShelfID, VariantID: variantId }
+      });
+      const totalAgg = await prisma.stocks.aggregate({
+        where: { ShelfID: sh.ShelfID },
+        _sum: { OnHandQty: true }
+      });
+
+      const existingUnitsForThisItem = itemStock?.OnHandQty || 0;
+      const totalUnitsOnShelf = totalAgg._sum.OnHandQty || 0;
+      const isEmpty = totalUnitsOnShelf === 0;
+
+      shelfList.push({
+        shelfId: sh.ShelfID,
+        shelfCode: sh.ShelfCode,
+        level: sh.Level ?? 1,
+        position: sh.Position ?? 1,
+        storeId: sh.StoreID,
+        storeName: storeMap[sh.StoreID]?.StoreName || 'Dark Store',
+        storeType: storeMap[sh.StoreID]?.Type || 'Dark Store',
+        currentStockForThisItem: existingUnitsForThisItem,
+        totalUnitsOnShelf: totalUnitsOnShelf,
+        isEmpty: isEmpty,
+        isRecommended: isEmpty || existingUnitsForThisItem > 0
+      });
+    }
+
+    res.json({
+      success: true,
+      item: {
+        variantId: v.VariantID,
+        productId: v.ProductID,
+        productName: p ? p.ProductName : 'Item',
+        sku: v.SKU,
+        size: v.Size,
+        color: v.Color,
+        unit: v.Unit || 'PCS',
+        image: v.ImageURL || (p ? p.ImageURL : null),
+        mrp: v.MRP,
+        salePrice: v.SalePrice,
+        floorQty: floorStock ? floorStock.OnHandQty : 0,
+        floorStoreId: floorStock ? floorStock.StoreID : (floorStoreIds[0] || 6),
+        floorShelfId: floorStock ? floorStock.ShelfID : 9,
+        floorShelfCode: 'FL01'
+      },
+      shelves: shelfList
+    });
+  } catch (err) {
+    console.error('Error fetching item details for putaway:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 3. Execute Putaway Placement (Floor to Shelf)
+router.post('/execute', async (req, res) => {
+  try {
+    const { variantId, fromStoreId, fromShelfId, toShelfId, toShelfCode, quantity } = req.body;
+    const qty = parseInt(quantity);
+    if (!variantId || !toShelfId || isNaN(qty) || qty <= 0) {
+      return res.status(400).json({ success: false, message: 'Invalid putaway payload or quantity.' });
+    }
+
+    const v = await prisma.variants.findUnique({ where: { VariantID: parseInt(variantId) } });
+    if (!v) return res.status(404).json({ success: false, message: 'Variant not found' });
+    const p = await prisma.products.findUnique({ where: { ProductID: v.ProductID } });
+
+    const targetShelf = await prisma.shelves.findUnique({ where: { ShelfID: parseInt(toShelfId) } });
+    if (!targetShelf) return res.status(404).json({ success: false, message: 'Target shelf not found' });
+
+    let sourceStock = null;
+    if (fromStoreId && fromShelfId) {
+      sourceStock = await prisma.stocks.findFirst({
+        where: {
+          VariantID: parseInt(variantId),
+          StoreID: parseInt(fromStoreId),
+          ShelfID: parseInt(fromShelfId),
+          OnHandQty: { gte: qty }
+        }
+      });
+    }
+    if (!sourceStock) {
+      sourceStock = await prisma.stocks.findFirst({
+        where: {
+          VariantID: parseInt(variantId),
+          OnHandQty: { gte: qty }
+        }
+      });
+    }
+
+    if (!sourceStock || (sourceStock.OnHandQty || 0) < qty) {
+      return res.status(400).json({
+        success: false,
+        message: `Insufficient stock on floor. Available: ${sourceStock ? sourceStock.OnHandQty : 0}, Requested: ${qty}`
+      });
+    }
+
+    const fromShelfRecord = await prisma.shelves.findUnique({ where: { ShelfID: sourceStock.ShelfID } });
+    const fromShelfCode = fromShelfRecord?.ShelfCode || 'FL01';
+
+    const result = await prisma.$transaction(async (tx) => {
+      // 1. Deduct from source floor stock
+      await tx.stocks.update({
+        where: { StockID: sourceStock.StockID },
+        data: {
+          OnHandQty: sourceStock.OnHandQty - qty,
+          AvailableQty: Math.max(0, (sourceStock.AvailableQty || sourceStock.OnHandQty) - qty)
+        }
+      });
+
+      // 2. Add / Upsert into target shelf stock
+      const existingTargetStock = await tx.stocks.findFirst({
+        where: {
+          StoreID: targetShelf.StoreID,
+          ShelfID: targetShelf.ShelfID,
+          VariantID: parseInt(variantId)
+        }
+      });
+
+      let updatedTargetStock;
+      if (existingTargetStock) {
+        updatedTargetStock = await tx.stocks.update({
+          where: { StockID: existingTargetStock.StockID },
+          data: {
+            OnHandQty: (existingTargetStock.OnHandQty || 0) + qty,
+            AvailableQty: (existingTargetStock.AvailableQty || 0) + qty
+          }
+        });
+      } else {
+        updatedTargetStock = await tx.stocks.create({
+          data: {
+            StoreID: targetShelf.StoreID,
+            ShelfID: targetShelf.ShelfID,
+            VariantID: parseInt(variantId),
+            OnHandQty: qty,
+            AvailableQty: qty,
+            ReservedQty: 0
+          }
+        });
+      }
+
+      // 3. Record in StockMovements
+      const movement = await tx.stockMovements.create({
+        data: {
+          VariantID: parseInt(variantId),
+          FromStoreID: sourceStock.StoreID,
+          ToStoreID: targetShelf.StoreID,
+          FromShelf: fromShelfCode,
+          ToShelf: targetShelf.ShelfCode || toShelfCode,
+          Qty: qty,
+          Type: 'PUTAWAY',
+          Status: 'COMPLETED',
+          TransferNo: `PUT-${Date.now()}`,
+          Reason: `Putaway from ${fromShelfCode} to ${targetShelf.ShelfCode}`,
+          Date: new Date(),
+          CreatedBy: req.user?.userId || 1,
+          CreatedByName: req.user?.name || 'Putter'
+        }
+      });
+
+      return { movement, updatedTargetStock };
+    });
+
+    emitToRole('manager', 'wms:putaway_completed', {
+      movementId: result.movement.MovementID,
+      item: p ? p.ProductName : v.SKU,
+      qty: qty,
+      fromShelf: fromShelfCode,
+      toShelf: targetShelf.ShelfCode,
+      putterName: req.user?.name || 'Staff'
+    });
+
+    res.json({
+      success: true,
+      message: `🎉 Success! Placed ${qty} ${v.Unit || 'units'} of ${p ? p.ProductName : 'Item'} onto shelf [${targetShelf.ShelfCode}]. Stock updated!`,
+      movement: result.movement,
+      newShelfStock: result.updatedTargetStock.OnHandQty,
+      remainingFloorStock: sourceStock.OnHandQty - qty
+    });
+  } catch (err) {
+    console.error('Error executing putaway:', err);
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// 4. Get Putaway Tasks Log
+router.get('/tasks', async (req, res) => {
+  try {
+    const movements = await prisma.stockMovements.findMany({
+      where: { Type: 'PUTAWAY' },
+      orderBy: { Date: 'desc' },
+      take: 100
+    });
+
+    const tasks = [];
+    for (const m of movements) {
+      const v = await prisma.variants.findUnique({ where: { VariantID: m.VariantID } });
+      const p = v ? await prisma.products.findUnique({ where: { ProductID: v.ProductID } }) : null;
+      tasks.push({
+        movementId: m.MovementID,
+        pickerId: m.CreatedBy,
+        staffName: m.CreatedByName || `Staff #${m.CreatedBy}`,
+        time: m.Date,
+        outShelf: m.FromShelf || 'FL01',
+        inShelf: m.ToShelf || 'N/A',
+        itemId: m.VariantID,
+        itemName: p ? p.ProductName : (v ? v.SKU : `Item #${m.VariantID}`),
+        sku: v ? v.SKU : '',
+        unit: v ? v.Unit : 'PCS',
+        qty: m.Qty || 0,
+        status: m.Status || 'COMPLETED'
+      });
+    }
+
+    res.json({ success: true, count: tasks.length, tasks });
+  } catch (err) {
+    res.status(500).json({ success: false, message: err.message });
+  }
+});
+
+// -----------------------------------------------------------------------------
+// DOCK CLEARANCE TASKS
+// -----------------------------------------------------------------------------
 router.get('/dock-tasks', async (req, res) => {
   try {
     // Dock staging tasks with suggested bins and hygiene instructions

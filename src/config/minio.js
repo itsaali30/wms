@@ -12,10 +12,7 @@ const BUCKETS = {
   ATTENDANCE: 'wms-attendance',
   DAMAGES: 'wms-damages',
   STAGING: 'wms-staging',
-  DOCUMENTS: 'user-documents',
-  USER_IMAGE: 'user-image',
-  BANK_IMAGES: 'bank-images',
-  PRODUCT_IMAGES: 'product-images'
+  DOCUMENTS: 'user-documents'
 };
 
 async function ensureBucket(bucket) {
