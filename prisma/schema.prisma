@@ -1,0 +1,838 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model Warehouses {
+  WarehouseID Int      @id @default(autoincrement())
+  Name        String?
+  Address     String?
+  Lat         Float?
+  Long        Float?
+  Contact     String?
+  Type        String?
+  Status      String?
+  CreatedAt   DateTime @default(now())
+  UpdatedAt   DateTime @updatedAt
+  Stores      Stores[]
+}
+
+model Stores {
+  StoreID     Int        @id @default(autoincrement())
+  WarehouseID Int
+  StoreName   String?
+  Address     String?
+  Lat         Float?
+  Long        Float?
+  Type        String?
+  Status      String?
+  Warehouse   Warehouses @relation(fields: [WarehouseID], references: [WarehouseID])
+}
+
+model Shelves {
+  ShelfID   Int     @id @default(autoincrement())
+  StoreID   Int
+  ShelfCode String?
+  Level     Int?
+  Position  Int?
+}
+
+model Users {
+  UserID          Int                      @id @default(autoincrement())
+  UserNameFirst   String
+  UserNameLast    String
+  Gender          String?
+  Mobile          String?                  @unique
+  Email           String                   @unique
+  Password        String?
+  Role            String
+  IsActive        Boolean                  @default(false)
+  CreatedAt       DateTime                 @default(now())
+  LastActiveAt    DateTime?
+  ProfileImageUrl String?
+  IsOnline        Boolean                  @default(false)
+  GoogleID        String?                  @unique
+  UpdateAt        DateTime?
+  IsApproved      Boolean                  @default(false)
+  DOB             DateTime?
+  ApprovedAt      DateTime?
+  ApprovedByID    Int?
+  locationChanges LocationChangeRequests[]
+  bankAccounts    UserBankAccounts[]
+  documents       UserDocuments[]
+  nominees        UserNominee[]
+}
+
+model UserBankAccounts {
+  BankID       Int       @id @default(autoincrement())
+  UserID       Int
+  BankName     String?
+  AccountNo    String?
+  IFSC         String?
+  UPI          String?
+  IsPrimary    Boolean   @default(false)
+  BankImageUrl String?
+  CreatedAt    DateTime  @default(now())
+  IsApproved   Boolean   @default(false)
+  ApprovedAt   DateTime?
+  ApprovedByID Int?
+  user         Users     @relation(fields: [UserID], references: [UserID])
+}
+
+model UserDocuments {
+  DocID        Int       @id @default(autoincrement())
+  UserID       Int
+  Type         String?
+  Number       String?
+  ImageURL     String?
+  CreatedAt    DateTime  @default(now())
+  IsApproved   Boolean   @default(false)
+  ApprovedAt   DateTime?
+  ApprovedByID Int?
+  user         Users     @relation(fields: [UserID], references: [UserID])
+}
+
+model UserNominee {
+  NomineeID      Int       @id @default(autoincrement())
+  UserID         Int
+  NomineeName    String?
+  Relation       String?
+  DOB            String?
+  Phone          String?
+  EmergencyPhone String?
+  Address        String?
+  CreatedAt      DateTime  @default(now())
+  IsApproved     Boolean   @default(false)
+  ApprovedAt     DateTime?
+  ApprovedByID   Int?
+  user           Users     @relation(fields: [UserID], references: [UserID])
+}
+
+model Staff {
+  StaffID     Int       @id @default(autoincrement())
+  UserID      Int
+  StoreID     Int
+  RoleID      Int
+  JoiningDate DateTime?
+  Status      String?
+}
+
+model Roles {
+  RoleID      Int     @id @default(autoincrement())
+  RoleName    String?
+  Permissions String?
+}
+
+model Shifts {
+  ShiftID    Int     @id @default(autoincrement())
+  StartTime  String?
+  EndTime    String?
+  BufferTime String?
+  Name       String?
+}
+
+model ShiftAssignments {
+  AssignmentID Int       @id @default(autoincrement())
+  StaffID      Int
+  ShiftID      Int
+  Date         DateTime?
+  SlotName     String?
+  Status       String?
+}
+
+model StoreShiftManager {
+  ManagerID Int       @id @default(autoincrement())
+  StoreID   Int
+  StaffID   Int
+  ShiftID   Int
+  Date      DateTime?
+}
+
+model AttendanceLogs {
+  LogID    Int       @id @default(autoincrement())
+  StaffID  Int
+  ShiftID  Int
+  CheckIn  String?
+  CheckOut String?
+  Date     DateTime?
+  Lat      Float?
+  Long     Float?
+  Status   String?
+}
+
+model StaffTransfers {
+  TransferID    Int       @id @default(autoincrement())
+  StaffID       Int
+  FromStoreID   Int
+  ToStoreID     Int
+  EffectiveDate DateTime?
+  Status        String?
+}
+
+model Merchants {
+  MerchantID Int     @id @default(autoincrement())
+  Name       String?
+  GSTIN      String?
+  Address    String?
+  Contact    String?
+  Category   String?
+  Status     String?
+}
+
+model MerchantContacts {
+  ContactID  Int     @id @default(autoincrement())
+  MerchantID Int
+  Name       String?
+  Phone      String?
+  Email      String?
+  Role       String?
+  phone2     String?
+  whatsapp   String?
+}
+
+model PurchaseReturns {
+  ReturnID    Int       @id @default(autoincrement())
+  ReturnNo    String?
+  MerchantID  Int
+  WarehouseID Int
+  TotalAmount Float?
+  Reason      String?
+  Status      String?   @default("completed")
+  CreatedBy   Int?
+  CreatedAt   DateTime? @default(now())
+
+  Items       PurchaseReturnItems[]
+}
+
+model PurchaseReturnItems {
+  ReturnItemID Int     @id @default(autoincrement())
+  ReturnID     Int
+  VariantID    Int
+  Qty          Int?
+  Price        Float?
+  Reason       String?
+
+  Return       PurchaseReturns @relation(fields: [ReturnID], references: [ReturnID], onDelete: Cascade)
+}
+
+model MerchantLedger {
+  LedgerID    Int       @id @default(autoincrement())
+  MerchantID  Int
+  Type        String?
+  Amount      Float?
+  ReferenceID Int?
+  Date        DateTime? @default(now())
+  Balance     Float?
+  PaymentMode String?
+  Notes       String?
+  CreatedBy   Int?
+}
+
+model GRNs {
+  GRNID          Int       @id @default(autoincrement())
+  GRNNumber      String?   @unique
+  Type           String    @default("PO")
+  POID           Int?
+  MerchantID     Int
+  WarehouseID    Int
+  StoreID        Int?
+  ShelfID        Int?
+  TotalAmount    Float?    @default(0)
+  ReceivedByID   Int?
+  ReceivedByName String?
+  ReceivedAt     DateTime  @default(now())
+  Remarks        String?
+  PaymentMode    String?   @default("credit")
+  Status         String?   @default("completed")
+  CreatedAt      DateTime  @default(now())
+
+  Items          GRNItems[]
+}
+
+model GRNItems {
+  GRNItemID   Int      @id @default(autoincrement())
+  GRNID       Int
+  VariantID   Int
+  VariantName String?
+  Qty         Int
+  Cost        Float?   @default(0)
+  Subtotal    Float?   @default(0)
+  UOM         String?
+
+  GRN         GRNs     @relation(fields: [GRNID], references: [GRNID], onDelete: Cascade)
+}
+
+model Categories {
+  CategoryID       Int     @id @default(autoincrement())
+  Status           String?
+  CategoryImageURL String?
+  CategoryName     String?
+}
+
+model SubCategories {
+  SubCategoryID       Int     @id @default(autoincrement())
+  CategoryID          Int
+  Status              String?
+  CategorySubName     String?
+  SubCategoryImageURL String?
+}
+
+model Brands {
+  BrandID     Int     @id @default(autoincrement())
+  BrandName   String?
+  LogoURL     String?
+  Description String?
+  Status      String?
+}
+
+model Products {
+  ProductID          Int      @id @default(autoincrement())
+  SubCategoryID      Int
+  BrandID            Int
+  ImageURL           String?
+  TaxRate            Float?
+  IsActive           Boolean  @default(false)
+  CreatedAt          DateTime @default(now())
+  ProductDescription String?
+  ProductName        String?
+}
+
+model Variants {
+  VariantID  Int       @id @default(autoincrement())
+  ProductID  Int
+  SKU        String?
+  Weight     Float?
+  Size       String?
+  Color      String?
+  MRP        String?
+  SalePrice  Float?
+  Cost       Float?
+  ExpiryDate DateTime?
+  Status     String?
+  Unit       String?
+  ShelfID    Int
+  CreatedAt  DateTime  @default(now())
+  ImageURL   String?
+  IsActive   Boolean   @default(true)
+  ValidDays  Int?
+}
+
+model Stocks {
+  StockID      Int  @id @default(autoincrement())
+  StoreID      Int
+  VariantID    Int
+  ShelfID      Int
+  OnHandQty    Int?
+  ReservedQty  Int?
+  AvailableQty Int?
+}
+
+model StockMovements {
+  MovementID    Int       @id @default(autoincrement())
+  VariantID     Int
+  FromStoreID   Int
+  ToStoreID     Int
+  FromShelf     String?
+  ToShelf       String?
+  Qty           Int?
+  Type          String?
+  TransferNo    String?
+  Transporter   String?
+  VehicleNo     String?
+  SealNo        String?
+  Reason        String?
+  Status        String?   @default("COMPLETED")
+  Date          DateTime? @default(now())
+  CreatedBy     Int?
+  CreatedByName String?
+}
+
+model InventorySnapshots {
+  SnapshotID Int       @id @default(autoincrement())
+  StoreID    Int
+  VariantID  Int
+  Qty        Int?
+  Date       DateTime?
+}
+
+model PutawayTasks {
+  TaskID      Int       @id @default(autoincrement())
+  StoreID     Int
+  StaffID     Int
+  VariantID   Int
+  Qty         Int?
+  TargetShelf String?
+  Status      String?
+  Date        DateTime?
+}
+
+model Tasks {
+  TaskID    Int      @id @default(autoincrement())
+  StoreID   Int
+  StaffID   Int
+  Type      String?
+  Priority  String?
+  Status    String?
+  CreatedAt DateTime @default(now())
+}
+
+model TaskItems {
+  ItemID      Int     @id @default(autoincrement())
+  TaskID      Int
+  RecordID    Int
+  Description String?
+  Status      String?
+}
+
+model TaskLogs {
+  LogID       Int       @id @default(autoincrement())
+  TaskID      Int
+  Action      String?
+  Timestamp   DateTime?
+  PerformedBy String?
+}
+
+model Customers {
+  CustomerID Int      @id @default(autoincrement())
+  Name       String?
+  Phone      String?
+  Email      String?
+  DOB        String?
+  Gender     String?
+  Status     String?
+  CreatedAt  DateTime @default(now())
+}
+
+model CustomerAddresses {
+  AddressID    Int     @id @default(autoincrement())
+  CustomerID   Int
+  Label        String?
+  AddressLine1 String?
+  Landmark     String?
+  Area         String?
+  City         String?
+  Lat          Float?
+  Long         Float?
+  IsDefault    Boolean @default(false)
+}
+
+model Carts {
+  CartID      Int      @id @default(autoincrement())
+  CustomerID  Int
+  StoreID     Int
+  TotalAmount Float?
+  TotalQty    Int?
+  CreatedAt   DateTime @default(now())
+}
+
+model CartItems {
+  CartItemID Int    @id @default(autoincrement())
+  CartID     Int
+  VariantID  Int
+  Qty        Int?
+  Price      Float?
+  Discount   Float?
+}
+
+model Orders {
+  OrderID              Int      @id @default(autoincrement())
+  CustomerID           Int
+  StoreID              Int
+  AddressID            Int
+  TotalMRP             String?
+  TotalDiscount        Float?
+  CouponID             Int
+  Tax                  Float?
+  DeliveryFee          Float?
+  FinalAmount          Float?
+  Status               String?
+  PaymentStatus        String?
+  PaymentMethod        String?
+  DeliveryTimeEstimate String?
+  CreatedAt            DateTime @default(now())
+}
+
+model OrderItems {
+  OrderItemID Int     @id @default(autoincrement())
+  OrderID     Int
+  VariantID   Int
+  Qty         Int?
+  Price       Float?
+  Tax         Float?
+  Subtotal    String?
+  Status      String?
+}
+
+model OrderStatusHistory {
+  HistoryID Int       @id @default(autoincrement())
+  OrderID   Int
+  Status    String?
+  Location  String?
+  Comment   String?
+  Timestamp DateTime?
+}
+
+model Payments {
+  PaymentID     Int       @id @default(autoincrement())
+  OrderID       Int
+  TransactionID Int
+  Gateway       String?
+  Method        String?
+  Amount        Float?
+  Status        String?
+  ErrorMessage  String?
+  Time          DateTime?
+}
+
+model Coupons {
+  CouponID      Int     @id @default(autoincrement())
+  Code          String?
+  DiscountType  Float?
+  Value         Float?
+  MinOrderValue String?
+  MaxDiscount   Float?
+  Expiry        String?
+  UsageLimit    String?
+  IsActive      Boolean @default(false)
+}
+
+model OrderReturns {
+  ReturnID          Int      @id @default(autoincrement())
+  OrderID           Int
+  CustomerID        Int
+  Reason            String?
+  TotalRefundAmount Float?
+  Status            String?
+  CreatedAt         DateTime @default(now())
+}
+
+model OrderReturnItems {
+  ReturnItemID Int     @id @default(autoincrement())
+  ReturnID     Int
+  OrderItemID  Int
+  Qty          Int?
+  Price        Float?
+  Reason       String?
+  ShelfID      Int
+}
+
+model ReturnShelfLogs {
+  LogID        Int     @id @default(autoincrement())
+  ReturnItemID Int
+  StoreID      Int
+  ShelfID      Int
+  Qty          Int?
+  Status       String?
+  VerifiedBy   String?
+}
+
+model PickLists {
+  PickListID Int      @id @default(autoincrement())
+  OrderID    Int
+  StoreID    Int
+  StaffID    Int
+  Status     String?
+  CreatedAt  DateTime @default(now())
+}
+
+model PickListItems {
+  ItemID     Int     @id @default(autoincrement())
+  PickListID Int
+  VariantID  Int
+  ShelfID    Int
+  QtyToPick  Int?
+  QtyPicked  Int?
+  Status     String?
+}
+
+model PackingLists {
+  PackID     Int       @id @default(autoincrement())
+  PickListID Int
+  OrderID    Int
+  StaffID    Int
+  Status     String?
+  PackedAt   DateTime?
+}
+
+model PackingItems {
+  ItemID         Int     @id @default(autoincrement())
+  PackID         Int
+  OrderItemID    Int
+  WeightVerified String?
+  Status         String?
+}
+
+model Riders {
+  RiderID     Int      @id @default(autoincrement())
+  UserID      Int
+  StoreID     Int
+  VehicleType String?
+  LicenseNo   String?
+  InsuranceNo String?
+  Status      String?
+  Rating      Float?
+  IsActive    Boolean  @default(false)
+  CreatedAt   DateTime @default(now())
+}
+
+model RiderShifts {
+  RiderShiftID Int       @id @default(autoincrement())
+  RiderID      Int
+  ShiftID      Int
+  Date         DateTime?
+  Status       String?
+}
+
+model RiderShiftLogs {
+  LogID             Int     @id @default(autoincrement())
+  RiderShiftID      Int
+  CheckIn           String?
+  CheckOut          String?
+  DistanceTravelled String?
+  FuelBonus         String?
+  Status            String?
+}
+
+model RiderWallet {
+  WalletID    Int       @id @default(autoincrement())
+  RiderID     Int
+  Balance     Float?
+  Currency    String?
+  LastUpdated DateTime?
+}
+
+model RiderTransactions {
+  TransactionID Int       @id @default(autoincrement())
+  WalletID      Int
+  Type          String?
+  Amount        Float?
+  Description   String?
+  ReferenceID   Int
+  Time          DateTime?
+}
+
+model CashCollections {
+  CollectionID         Int       @id @default(autoincrement())
+  RiderID              Int
+  OrderID              Int
+  Amount               Float?
+  CollectedAt          DateTime?
+  Status               String?
+  SubmittedToManagerID Int
+  SubmittedAt          DateTime?
+}
+
+model CashDeposits {
+  DepositID           Int       @id @default(autoincrement())
+  RiderID             Int
+  StoreID             Int
+  Amount              Float?
+  DepositMethod       String?
+  DepositedAt         DateTime?
+  ReceivedByManagerID Int
+  VerifiedByAdminID   Int
+  Status              String?
+  Notes               String?
+}
+
+model RiderEarnings {
+  EarningID   Int      @id @default(autoincrement())
+  RiderID     Int
+  OrderID     Int
+  BaseFee     Float?
+  DistanceFee Float?
+  SurgeBonus  String?
+  TipAmount   Float?
+  TotalEarned String?
+  CreatedAt   DateTime @default(now())
+}
+
+model SurgePricing {
+  SurgeID    Int     @id @default(autoincrement())
+  StoreID    Int
+  StartTime  String?
+  EndTime    String?
+  Multiplier Float?
+  Reason     String?
+  Status     String?
+}
+
+model RiderPenalties {
+  PenaltyID   Int       @id @default(autoincrement())
+  RiderID     Int
+  Amount      Float?
+  Reason      String?
+  ReferenceID Int
+  Date        DateTime?
+}
+
+model RiderBonuses {
+  BonusID     Int       @id @default(autoincrement())
+  RiderID     Int
+  Amount      Float?
+  Reason      String?
+  ReferenceID Int
+  Date        DateTime?
+}
+
+model RiderLiveLocation {
+  LocID     Int       @id @default(autoincrement())
+  RiderID   Int
+  Lat       Float?
+  Long      Float?
+  Battery   Float?
+  Speed     Float?
+  Heading   Float?
+  Timestamp DateTime?
+}
+
+model Reviews {
+  ReviewID   Int      @id @default(autoincrement())
+  CustomerID Int
+  ProductID  Int
+  OrderID    Int
+  Rating     Float?
+  Comment    String?
+  Images     String?
+  Status     String?
+  CreatedAt  DateTime @default(now())
+}
+
+model Notifications {
+  NotifyID Int       @id @default(autoincrement())
+  UserID   Int
+  Title    String?
+  Message  String?
+  Type     String?
+  Status   String?
+  SentAt   DateTime?
+}
+
+model LocationChangeRequests {
+  RequestID     Int       @id @default(autoincrement())
+  UserID        Int
+  OldLocationID Int?
+  NewLocationID Int?
+  Type          String    @default("store")
+  Reason        String?
+  Status        String    @default("pending")
+  RequestedAt   DateTime  @default(now())
+  ApprovedAt    DateTime?
+  ApprovedByID  Int?
+  User          Users     @relation(fields: [UserID], references: [UserID], onDelete: Cascade)
+}
+
+model AuditLogs {
+  LogID     Int       @id @default(autoincrement())
+  UserID    Int
+  Action    String?
+  TableName String?
+  RecordID  Int
+  OldValue  String?
+  NewValue  String?
+  Time      DateTime?
+}
+
+model APIKeys {
+  KeyID       Int       @id @default(autoincrement())
+  UserID      Int
+  KeyName     String?
+  APIKey      String?
+  Secret      String?
+  Permissions String?
+  ExpiresAt   DateTime?
+  Status      String?
+}
+
+model PurchaseOrders {
+  POID         Int       @id @default(autoincrement())
+  MerchantID   Int
+  WarehouseID  Int
+  TotalAmount  Float?
+  ExpectedDate DateTime?
+  Status       String?   // draft, pending, ordered, received, cancelled
+  CreatedBy    Int?
+  ApprovedBy   Int?
+  CreatedAt    DateTime  @default(now())
+  UpdatedAt    DateTime  @updatedAt
+
+  Items        PurchaseOrderItems[]
+  Invoices     PurchaseInvoices[]
+}
+
+model PurchaseOrderItems {
+  ItemID       Int     @id @default(autoincrement())
+  POID         Int
+  VariantID    Int
+  VariantName  String?
+  UOM          String?
+  Qty          Int?
+  Cost         Float?
+  Subtotal     Float?
+
+  PurchaseOrder PurchaseOrders @relation(fields: [POID], references: [POID], onDelete: Cascade)
+}
+
+model PurchaseInvoices {
+  InvoiceID         Int       @id @default(autoincrement())
+  POID              Int?
+  InvoiceNo         String?   @unique
+  MerchantInvoiceNo String?
+  MerchantID        Int?
+  Amount            Float?
+  Tax               Float?
+  Date              DateTime? @default(now())
+  Status            String?   @default("unpaid") // unpaid, paid, cancelled
+  PaymentMode       String?   // cash, credit, bank, upi
+  PaidAmount        Float?    @default(0)
+  CreatedBy         Int?
+  CreatedAt         DateTime  @default(now())
+
+  PurchaseOrder     PurchaseOrders? @relation(fields: [POID], references: [POID], onDelete: Cascade)
+}
+
+model DutyRecords {
+  DutyID         Int       @id @default(autoincrement())
+  StaffID        Int
+  UserID         Int
+  ShiftSlot      String?   // 'Morning', 'General', 'Night'
+  Date           DateTime  @default(now())
+  PunchInTime    String?
+  PunchOutTime   String?
+  SelfieUrl      String?
+  ApprovalStatus String    @default("PENDING_APPROVAL") // 'PENDING_APPROVAL', 'APPROVED', 'ACTIVE', 'COMPLETED', 'REJECTED'
+  ApprovalCode   String?   // 4-digit code generated/given by Manager (e.g. "4821")
+  ApprovedByID   Int?
+  ApprovedAt     DateTime?
+  TotalHours     Float?    @default(0)
+  Notes          String?
+  CreatedAt      DateTime  @default(now())
+  UpdatedAt      DateTime  @updatedAt
+}
+
+model StaffPayouts {
+  PayoutID      Int       @id @default(autoincrement())
+  StaffID       Int
+  UserID        Int
+  Role          String    // 'manager', 'picker', 'packer', etc.
+  PeriodStart   DateTime?
+  PeriodEnd     DateTime?
+  TotalShifts   Int       @default(1)
+  TotalHours    Float     @default(8.0)
+  BasePay       Float     @default(0.0)
+  Incentive     Float     @default(0.0)
+  TotalAmount   Float     @default(0.0)
+  Status        String    @default("PENDING") // 'PENDING', 'PROCESSED', 'PAID'
+  PaymentMethod String?   // 'BANK_TRANSFER', 'UPI', 'CASH'
+  PaymentRef    String?
+  PaidAt        DateTime?
+  ProcessedByID Int?
+  Notes         String?
+  CreatedAt     DateTime  @default(now())
+  UpdatedAt     DateTime  @updatedAt
+}
+

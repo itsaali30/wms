@@ -1,0 +1,1504 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Dark Store & WMS App Workflow</title>
+  <!-- Bootstrap 5 CSS CDN -->
+  <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/css/bootstrap.min.css" rel="stylesheet">
+  <!-- Bootstrap Icons CDN -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.11.3/font/bootstrap-icons.min.css">
+  <!-- Vue 3 CDN -->
+  <script src="https://unpkg.com/vue@3/dist/vue.global.prod.js"></script>
+  <!-- Socket.io Client CDN -->
+  <script src="/socket.io/socket.io.js"></script>
+  <!-- HTML5 QR / Barcode Scanner CDN -->
+  <script src="https://unpkg.com/html5-qrcode" type="text/javascript"></script>
+  <link rel="stylesheet" href="/css/style.css">
+  <link rel="manifest" href="/manifest.json">
+</head>
+<body>
+
+  <div id="app" v-cloak class="min-h-screen d-flex flex-column">
+
+    <!-- Top Real-Time Sync Bar -->
+    <header class="bg-dark text-white border-bottom border-secondary border-opacity-25 py-2 sticky-top z-3 shadow-sm" style="background-color: #170d2c !important;">
+      <div class="container d-flex justify-content-end align-items-center">
+        <!-- Real-Time Socket Connection Badge -->
+        <div class="d-flex align-items-center gap-2">
+          <span class="badge rounded-pill bg-dark border border-secondary border-opacity-50 font-monospace d-inline-flex align-items-center gap-1.5 py-1 px-2.5"
+                :class="isSocketConnected ? 'text-success' : 'text-danger'">
+            <span class="spinner-grow spinner-grow-sm" style="width: 8px; height: 8px;" v-if="isSocketConnected"></span>
+            <i class="bi bi-circle-fill text-danger" style="font-size: 8px;" v-else></i>
+            {{ isSocketConnected ? 'Socket Live Sync' : 'Offline' }}
+          </span>
+        </div>
+      </div>
+    </header>
+
+    <!-- Main Content Area (Bootstrap Container: Fits perfectly on Mobile & PC) -->
+    <main class="flex-grow-1 py-3">
+      <div class="container" style="max-width: 1080px;">
+
+        <!-- ========================================================================= -->
+        <!-- STEP 1. ONBOARDING & AUTHENTICATION SCREEN                                 -->
+        <!-- ========================================================================= -->
+        <section v-if="activeWorkflowStep === 'step1'" class="animate-fadeInScale py-3">
+          <!-- Logged-in Banner Guard -->
+          <div v-if="isLoggedIn" class="row justify-content-center mb-3">
+            <div class="col-12 col-md-8 col-lg-5">
+              <div class="card wms-card border-0 shadow-sm p-4 text-center">
+                <i class="bi bi-person-check-fill text-success fs-1 mb-2"></i>
+                <h4 class="fw-bold text-white mb-1">Already Logged In</h4>
+                <p class="text-white-50 small mb-3">You are currently logged in as <span class="text-success fw-bold">{{ user.name || user.email }}</span> ({{ user.role }}).</p>
+                <div class="d-flex flex-column gap-2">
+                  <button @click="navigateToStep('step4')" class="btn btn-emerald w-100 py-2 fw-bold text-uppercase">
+                    <i class="bi bi-house-door me-1"></i> Go to Home Dashboard
+                  </button>
+                  <button @click="logout" class="btn btn-outline-danger btn-sm w-100 py-2 fw-bold">
+                    <i class="bi bi-box-arrow-right me-1"></i> Log Out
+                  </button>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div v-else class="row justify-content-center">
+            <div class="col-12 col-md-8 col-lg-5">
+              <!-- Deep Purple Hero Header Card -->
+              <div class="wms-purple-header text-center p-4 rounded-4 shadow-sm mb-3">
+                <div class="rounded-3 bg-success text-dark d-inline-flex align-items-center justify-content-center fw-bold fs-3 mb-2 shadow" style="width: 54px; height: 54px;">
+                  <i class="bi bi-upc-scan"></i>
+                </div>
+                <h3 class="fw-bolder mb-1 text-white">Welcome Back!</h3>
+                <p class="text-white-50 small mb-0">ID/Email/Phone & Password</p>
+              </div>
+
+              <!-- Auth Card -->
+              <div class="card wms-card border-0 shadow-sm p-4">
+                <!-- Mode Switch Tabs -->
+                <div class="btn-group w-100 mb-3 bg-light p-1 rounded-3">
+                  <button @click="authMode = 'login'" class="btn btn-sm rounded-2 fw-bold"
+                    :class="authMode === 'login' ? 'btn-white bg-white text-dark shadow-sm' : 'text-muted'">
+                    Login
+                  </button>
+                  <button @click="authMode = 'signup'" class="btn btn-sm rounded-2 fw-bold"
+                    :class="authMode === 'signup' ? 'btn-white bg-white text-dark shadow-sm' : 'text-muted'">
+                    Sign Up
+                  </button>
+                  <button @click="authMode = 'forgot'" class="btn btn-sm rounded-2 fw-bold"
+                    :class="authMode === 'forgot' ? 'btn-white bg-white text-dark shadow-sm' : 'text-muted'">
+                    Forgot?
+                  </button>
+                </div>
+
+                <!-- 1. LOGIN FORM -->
+                <form v-if="authMode === 'login'" @submit.prevent="login" class="d-flex flex-column gap-3">
+                  <div class="input-group">
+                    <span class="input-group-text bg-white border-end-0 text-muted"><i class="bi bi-person fs-5"></i></span>
+                    <input v-model="loginForm.login" type="text" required placeholder="ID/Email/Phone" class="form-control border-start-0 py-2">
+                  </div>
+
+                  <div class="input-group">
+                    <span class="input-group-text bg-white border-end-0 text-muted"><i class="bi bi-lock fs-5"></i></span>
+                    <input v-model="loginForm.password" type="password" required placeholder="Password" class="form-control border-start-0 py-2">
+                  </div>
+
+                  <div v-if="loginError" class="alert alert-danger py-2 px-3 small d-flex align-items-center gap-2 mb-0 rounded-3">
+                    <i class="bi bi-exclamation-triangle-fill"></i>
+                    <span>{{ loginError }}</span>
+                  </div>
+
+                  <button type="submit" :disabled="isLoggingIn" class="btn btn-emerald w-100 py-2.5 text-uppercase">
+                    <span v-if="isLoggingIn" class="spinner-border spinner-border-sm me-1"></span>
+                    <span>Sign Up / Login</span>
+                  </button>
+
+                  <div class="text-center">
+                    <button type="button" @click="authMode = 'forgot'" class="btn btn-link text-decoration-none small text-muted p-0">
+                      Forgot Password?
+                    </button>
+                  </div>
+                </form>
+
+                <!-- 2. SIGN UP FORM -->
+                <form v-else-if="authMode === 'signup'" @submit.prevent="submitSignUp" class="d-flex flex-column gap-2.5">
+                  <div class="row g-2">
+                    <div class="col-6">
+                      <input v-model="signUpForm.firstName" type="text" required placeholder="First Name" class="form-control form-control-sm">
+                    </div>
+                    <div class="col-6">
+                      <input v-model="signUpForm.lastName" type="text" placeholder="Last Name" class="form-control form-control-sm">
+                    </div>
+                  </div>
+                  <input v-model="signUpForm.mobile" type="tel" required placeholder="10-digit mobile" class="form-control form-control-sm font-monospace">
+                  <input v-model="signUpForm.email" type="email" required placeholder="staff@store.com" class="form-control form-control-sm font-monospace">
+                  <select v-model="signUpForm.role" class="form-select form-select-sm">
+                    <option value="picker">🎯 Picker (Item Uthane Wala)</option>
+                    <option value="putter">📦 Put-away Associate (Maal Rakhne Wala)</option>
+                    <option value="inward">🚚 Inward / Receiving Associate</option>
+                    <option value="packer">🛍️ Packer & Sorter</option>
+                    <option value="manager">🧑‍💼 Warehouse Floor Lead / Manager</option>
+                  </select>
+                  <input v-model="signUpForm.password" type="password" required placeholder="Password" class="form-control form-control-sm">
+                  <button type="submit" :disabled="isSubmittingAuth" class="btn btn-emerald w-100 py-2 text-uppercase mt-2">
+                    Register Staff Account
+                  </button>
+                </form>
+
+                <!-- 3. FORGOT PASSWORD FORM -->
+                <form v-else-if="authMode === 'forgot'" @submit.prevent="submitForgotPassword" class="d-flex flex-column gap-2.5">
+                  <h6 class="fw-bold mb-1">Reset Terminal Password</h6>
+                  <input v-model="forgotForm.login" type="text" required placeholder="Registered Mobile or Email" class="form-control form-control-sm">
+                  <input v-model="forgotForm.newPassword" type="password" required placeholder="New Password" class="form-control form-control-sm">
+                  <button type="submit" :disabled="isSubmittingAuth" class="btn btn-emerald w-100 py-2 text-uppercase mt-2">
+                    Reset & Login
+                  </button>
+                </form>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- STEP 2. PRE-DUTY, SALARY NOTIFICATION & APPROVALS                          -->
+        <!-- ========================================================================= -->
+        <section v-else-if="activeWorkflowStep === 'step2'" class="animate-fadeInScale py-2">
+          <!-- Header Bar -->
+          <div class="wms-purple-header rounded-4 p-3 d-flex justify-content-between align-items-center mb-3 shadow-sm">
+            <div class="d-flex align-items-center gap-2">
+              <button @click="navigateToStep('step4')" class="btn btn-link text-white p-0 me-1" title="Back to Home">
+                <i class="bi bi-arrow-left fs-5"></i>
+              </button>
+              <h5 class="mb-0 fw-bold text-white text-uppercase">Shift Salary Notice & Approvals</h5>
+            </div>
+            <span class="badge bg-success text-dark fw-bold rounded-pill px-3 py-1.5">Step 2 Dual Sync</span>
+          </div>
+
+          <!-- Responsive 2-Column Grid on PC, Stacked on Mobile -->
+          <div class="row g-3">
+            <!-- Left Column: Shift Salary Notice -->
+            <div class="col-12 col-md-6">
+              <div class="card wms-card border-0 shadow-sm p-4 h-100 d-flex flex-column justify-content-between">
+                <div>
+                  <h6 class="fw-bolder text-uppercase text-dark mb-3">Active Shift Pay</h6>
+                  
+                  <div class="bg-light p-3 rounded-4 border mb-3">
+                    <div class="row align-items-center">
+                      <div class="col-6">
+                        <small class="text-muted d-block font-weight-bold">Base Pay</small>
+                        <span class="fs-2 fw-bolder font-monospace text-dark">₹450</span>
+                      </div>
+                      <div class="col-6 text-end">
+                        <small class="text-muted d-block font-weight-bold">Est. Task Earnings</small>
+                        <span class="fs-5 fw-bolder font-monospace text-success">₹250-₹500</span>
+                      </div>
+                    </div>
+                  </div>
+
+                  <h6 class="fw-bold text-muted small text-uppercase mb-2">Incentive slabs</h6>
+                  <ul class="list-group list-group-flush mb-3">
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0 py-2">
+                      <span class="small font-weight-bold">Incentive slabs (15-30 picks)</span>
+                      <strong class="font-monospace">₹250 - ₹500</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0 py-2">
+                      <span class="small font-weight-bold">Incentive slabs (Fast Put-away)</span>
+                      <strong class="font-monospace">₹250 - ₹500</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0 py-2">
+                      <span class="small font-weight-bold">Incentive slabs (Zero Error Bonus)</span>
+                      <strong class="font-monospace">₹350 - ₹500</strong>
+                    </li>
+                    <li class="list-group-item d-flex justify-content-between align-items-center px-0 py-2">
+                      <span class="small font-weight-bold">Incentive slabs (Peak Shift Allowance)</span>
+                      <strong class="font-monospace">₹350 - ₹500</strong>
+                    </li>
+                  </ul>
+                </div>
+
+                <div>
+                  <p class="text-muted small text-center italic mb-2">The accept & request punch-in... punch this</p>
+                  <button @click="acceptManagerApproval" class="btn btn-emerald w-100 py-2.5 text-uppercase">
+                    Accept & Request Punch-In
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Manager Approval OTP & Worker Punch-In -->
+            <div class="col-12 col-md-6 d-flex flex-column gap-3">
+              <!-- Sub-Card 1: MANAGER APPROVAL (Supervisor Preview) -->
+              <div class="card border-0 text-white p-3 rounded-4 shadow-sm" style="background: linear-gradient(135deg, #241445 0%, #2f1a58 100%);">
+                <div class="d-flex justify-content-between align-items-center mb-2">
+                  <span class="fw-bold text-uppercase small text-white-50">Manager Approval</span>
+                  <span class="badge bg-success text-dark fw-bold rounded-pill">Floor Lead Deck</span>
+                </div>
+                <div class="bg-white text-dark rounded-4 p-3 text-center my-1 border shadow-sm">
+                  <small class="text-muted d-block text-uppercase fw-bold">Approval OTP:</small>
+                  <h1 class="display-5 fw-bolder font-monospace tracking-widest mb-0">{{ managerApprovalOtp }}</h1>
+                </div>
+                <div class="row g-2 mt-2">
+                  <div class="col-6">
+                    <button type="button" @click="navigateToStep('step4')" class="btn btn-outline-light w-100 btn-sm rounded-pill fw-bold">
+                      Admin
+                    </button>
+                  </div>
+                  <div class="col-6">
+                    <button type="button" @click="acceptManagerApproval" class="btn btn-success w-100 btn-sm rounded-pill fw-bold text-dark">
+                      Accept
+                    </button>
+                  </div>
+                </div>
+                <small class="text-white-50 text-center mt-2 d-block" style="font-size: 11px;">
+                  The on-duty manager provides to unlock the shift.
+                </small>
+              </div>
+
+              <!-- Sub-Card 2: WORKER PUNCH-IN & SELFIE GEOFENCE -->
+              <div class="card wms-card border-0 shadow-sm p-4 text-center">
+                <h6 class="fw-bold text-uppercase mb-0 text-dark">PUNCH-IN</h6>
+                <small class="text-muted d-block mb-3">(Enter Manager OTP to Unlock)</small>
+
+                <!-- 4 Distinct OTP Digits -->
+                <div class="d-flex justify-content-center gap-2 mb-3">
+                  <input v-for="(digit, idx) in pinDigits" :key="idx"
+                    :id="'pinInput_' + idx"
+                    type="tel"
+                    maxlength="1"
+                    :value="digit"
+                    @input="onDigitInput(idx, $event)"
+                    @keydown="onDigitKeydown(idx, $event)"
+                    class="otp-input-box">
+                </div>
+
+                <!-- Camera Selfie Frame with Face Brackets -->
+                <div class="face-scanner-frame my-2">
+                  <span class="face-bracket face-bracket-tl"></span>
+                  <span class="face-bracket face-bracket-tr"></span>
+                  <span class="face-bracket face-bracket-bl"></span>
+                  <span class="face-bracket face-bracket-br"></span>
+
+                  <img v-if="selfiePreview" :src="selfiePreview" class="w-100 h-100 object-fit-cover">
+                  <div v-else class="text-center p-2">
+                    <i class="bi bi-person-fill text-muted fs-1 d-block mb-1"></i>
+                    <button type="button" @click="$refs.cameraInput?.click()" class="btn btn-link text-success p-0 text-decoration-none small fw-bold">
+                      <i class="bi bi-camera-fill me-1"></i> Tap Selfie
+                    </button>
+                  </div>
+                  <input type="file" ref="cameraInput" accept="image/*" capture="user" @change="onSelfieSelected" class="d-none">
+                </div>
+
+                <!-- Geofence Badge -->
+                <div class="alert alert-success d-flex align-items-center justify-content-center gap-2 py-2 px-3 rounded-pill mb-3 small fw-bold">
+                  <i class="bi bi-geo-alt-fill text-success fs-6"></i>
+                  <span>Selfie + GPS Geofence Check (50m radius scan badge)</span>
+                </div>
+
+                <button type="button" @click="submitPinUnlock" class="btn btn-emerald w-100 py-2.5 text-uppercase">
+                  Verify OTP & Unlock Shift
+                </button>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- STEP 3. SLOT BOOKING & ATTENDANCE HISTORY                                  -->
+        <!-- ========================================================================= -->
+        <section v-else-if="activeWorkflowStep === 'step3'" class="animate-fadeInScale py-2">
+          <!-- Header Bar -->
+          <div class="wms-purple-header rounded-4 p-3 d-flex justify-content-between align-items-center mb-3 shadow-sm">
+            <div class="d-flex align-items-center gap-2">
+              <button @click="navigateToStep('step4')" class="btn btn-link text-white p-0 me-1" title="Back to Home">
+                <i class="bi bi-arrow-left fs-5"></i>
+              </button>
+              <h5 class="mb-0 fw-bold text-white text-uppercase">Slot Booking & Attendance History</h5>
+            </div>
+            <button @click="navigateToStep('step4')" class="btn btn-sm btn-outline-light rounded-pill px-3 fw-bold">
+              Home Dashboard ➔
+            </button>
+          </div>
+
+          <!-- Responsive 2-Column Grid on PC, Stacked on Mobile -->
+          <div class="row g-3">
+            <!-- Left Column: Slot Booking -->
+            <div class="col-12 col-md-6">
+              <div class="card wms-card border-0 shadow-sm p-4 h-100">
+                <h6 class="fw-bolder text-uppercase text-dark mb-3 d-flex align-items-center gap-2">
+                  <i class="bi bi-calendar-check text-success"></i> Slot Booking
+                </h6>
+
+                <!-- Weekday Calendar Strip -->
+                <div class="bg-light p-2 rounded-4 border mb-3">
+                  <div class="d-flex justify-content-between text-center gap-1">
+                    <button v-for="(item, idx) in mockWeekDays" :key="idx"
+                      @click="selectedWeekIndex = idx"
+                      class="btn btn-sm rounded-3 flex-fill p-1 transition"
+                      :class="selectedWeekIndex === idx ? 'btn-success text-dark font-black shadow-sm' : 'btn-light border-0 text-muted'">
+                      <small class="d-block text-uppercase fw-bold" style="font-size: 10px;">{{ item.day }}</small>
+                      <span class="fs-6 fw-bold mt-0.5 d-inline-block">{{ item.date }}</span>
+                    </button>
+                  </div>
+                </div>
+
+                <!-- Shift Cards -->
+                <div class="d-flex flex-column gap-2.5">
+                  <div class="p-3 rounded-4 border-2 border-success bg-success bg-opacity-10 d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-3">
+                      <i class="bi bi-check-circle-fill text-success fs-5"></i>
+                      <div>
+                        <h6 class="mb-0 fw-bold text-dark">Morning Shift</h6>
+                        <small class="text-muted font-monospace">6:00 AM - 2:00 PM</small>
+                      </div>
+                    </div>
+                    <span class="badge bg-success text-dark rounded-pill px-3 py-1.5 fw-bold">Selected</span>
+                  </div>
+
+                  <div class="p-3 rounded-4 border bg-white d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-3">
+                      <i class="bi bi-circle text-muted fs-5"></i>
+                      <div>
+                        <h6 class="mb-0 fw-bold text-dark">Afternoon Shift</h6>
+                        <small class="text-muted font-monospace">2:00 PM - 10:00 PM</small>
+                      </div>
+                    </div>
+                    <button @click="showToast('Afternoon Shift Selected')" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                      Select
+                    </button>
+                  </div>
+
+                  <div class="p-3 rounded-4 border bg-white d-flex justify-content-between align-items-center">
+                    <div class="d-flex align-items-center gap-3">
+                      <i class="bi bi-circle text-muted fs-5"></i>
+                      <div>
+                        <h6 class="mb-0 fw-bold text-dark">Night Shift</h6>
+                        <small class="text-muted font-monospace">10:00 PM - 6:00 AM</small>
+                      </div>
+                    </div>
+                    <button @click="showToast('Night Shift Selected')" class="btn btn-sm btn-outline-secondary rounded-pill px-3">
+                      Select
+                    </button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- Right Column: Attendance History Month View -->
+            <div class="col-12 col-md-6">
+              <div class="card wms-card border-0 shadow-sm p-4 h-100">
+                <div class="d-flex justify-content-between align-items-center mb-3">
+                  <h6 class="fw-bolder text-uppercase text-dark mb-0 d-flex align-items-center gap-2">
+                    <i class="bi bi-calendar3 text-primary"></i> Attendance History
+                  </h6>
+                  <span class="badge bg-light text-dark border font-monospace">January 2022</span>
+                </div>
+
+                <!-- Calendar Grid -->
+                <div class="bg-light p-3 rounded-4 border mb-3">
+                  <div class="d-flex justify-content-between align-items-center mb-2 px-1">
+                    <button class="btn btn-sm btn-link text-muted p-0"><i class="bi bi-chevron-left"></i></button>
+                    <span class="fw-bold text-dark small">January 2022</span>
+                    <button class="btn btn-sm btn-link text-muted p-0"><i class="bi bi-chevron-right"></i></button>
+                  </div>
+
+                  <div class="row g-1 text-center text-muted fw-bold mb-1" style="font-size: 11px;">
+                    <div class="col">Sun</div><div class="col">Mon</div><div class="col">Tue</div><div class="col">Wed</div><div class="col">Thu</div><div class="col">Fri</div><div class="col">Sat</div>
+                  </div>
+
+                  <div class="row g-1 text-center font-monospace" style="font-size: 12px;">
+                    <div v-for="(cd, idx) in mockCalendarDays" :key="idx" class="col" style="flex: 0 0 14.28%;">
+                      <span class="badge rounded-circle d-inline-flex align-items-center justify-content-center p-0"
+                            style="width: 26px; height: 26px;"
+                            :class="cd.worked ? 'bg-success text-dark font-black shadow-sm' : (cd.inactive ? 'text-black-50' : 'text-dark')">
+                        {{ cd.day }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+
+                <!-- Confirmed Shift Summary Card -->
+                <div class="p-3 bg-light rounded-4 border d-flex justify-content-between align-items-center">
+                  <div>
+                    <div class="fw-bold text-dark small d-flex align-items-center gap-1.5">
+                      <i class="bi bi-check-circle-fill text-success"></i> Yesterday
+                    </div>
+                    <small class="text-muted d-block mt-0.5">10 PM - 2 PM, 8 hrs, Confirmed</small>
+                    <small class="text-success fw-bold">Earned ₹1,020</small>
+                  </div>
+                  <div class="text-end">
+                    <span class="fs-4 fw-bolder font-monospace text-success">₹1,020</span>
+                  </div>
+                </div>
+
+              </div>
+            </div>
+          </div>
+
+          <div class="mt-3">
+            <button @click="navigateToStep('step4')" class="btn btn-emerald w-100 py-2.5 text-uppercase">
+              Proceed to Home Dashboard ➔
+            </button>
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- STEP 4. MAIN TASK DASHBOARD SCREEN                                         -->
+        <!-- ========================================================================= -->
+        <section v-else-if="activeWorkflowStep === 'step4'" class="animate-fadeInScale py-2">
+          <!-- Top Wallet Header Bar (Gold Coin + Balance + Earnings) -->
+          <div class="wms-purple-header rounded-4 p-3 d-flex justify-content-between align-items-center mb-3 shadow-sm">
+            <div class="d-flex align-items-center gap-2">
+              <div class="rounded-circle bg-warning text-dark d-flex align-items-center justify-content-center fw-bold fs-6 shadow-sm" style="width: 34px; height: 34px;">
+                <i class="bi bi-coin"></i>
+              </div>
+              <span class="fw-bolder tracking-wider text-warning text-uppercase small">WALLET</span>
+            </div>
+            <div class="text-end font-monospace small">
+              <span class="text-white-50">Balance: <strong class="text-white">₹{{ walletData.availableBalance ? walletData.availableBalance.toFixed(0) : '1,450' }}</strong></span>
+              <span class="text-white-50 mx-2">|</span>
+              <span class="text-success">Today: <strong>+₹{{ walletData.todayEarnings || 240 }}</strong></span>
+            </div>
+          </div>
+
+          <!-- Active On Duty Worker Banner -->
+          <div class="worker-active-banner mb-3 d-flex justify-content-between align-items-center"
+               @click="selectSegment('profile')" style="cursor: pointer;" title="Tap to open My Profile">
+            <div class="d-flex align-items-center gap-3">
+              <div class="rounded-4 bg-white bg-opacity-25 text-white d-flex align-items-center justify-content-center fs-2 shadow-sm border border-white border-opacity-25 overflow-hidden" style="width: 54px; height: 54px;">
+                <img v-if="profileData.ProfileImageUrl || user.profileImage" :src="profileData.ProfileImageUrl || user.profileImage" style="width: 100%; height: 100%; object-fit: cover;" alt="Profile">
+                <i v-else class="bi bi-person-badge-fill"></i>
+              </div>
+              <div>
+                <small class="text-white-50 text-uppercase fw-bold d-block" style="font-size: 10px;">Active On Duty</small>
+                <h5 class="fw-bold mb-0 text-white text-capitalize">{{ user.name || 'Staff Associate' }}</h5>
+                <small class="text-white-50 font-monospace">{{ user.role || 'Picker' }} • Staff #{{ user.staffId || '101' }}</small>
+              </div>
+            </div>
+
+            <div class="text-end d-flex flex-column align-items-end gap-1">
+              <span class="badge bg-white text-success rounded-pill px-3 py-1.5 fw-bold shadow-sm">
+                {{ duty.onBreak ? 'ON BREAK' : (duty.duty === 'ON' ? 'IDLE / READY' : 'OFF DUTY') }}
+              </span>
+              <button v-if="duty.duty === 'ON'" @click="punchOut" class="btn btn-link text-white text-decoration-none small p-0 opacity-75">
+                Punch Out
+              </button>
+            </div>
+          </div>
+
+          <!-- Segment Tabs: TASKS | PROFILE -->
+          <div class="btn-group w-100 bg-white p-1 rounded-4 shadow-sm border mb-3">
+            <button @click="selectSegment('tasks')" class="btn py-2 rounded-3 fw-bold"
+              :class="dashboardSegment === 'tasks' ? 'btn-dark text-white font-black shadow-sm' : 'text-muted'">
+              TASKS
+            </button>
+            <button @click="selectSegment('profile')" class="btn py-2 rounded-3 fw-bold"
+              :class="dashboardSegment === 'profile' ? 'btn-dark text-white font-black shadow-sm' : 'text-muted'">
+              PROFILE
+            </button>
+          </div>
+
+          <!-- SUB-TAB A: 3 HERO TASK ACTION CARDS -->
+          <div v-if="dashboardSegment === 'tasks'" class="animate-fadeInScale">
+            <!-- 3 Hero Action Cards (1 Column on Mobile, 3 Columns on PC) -->
+            <div class="row g-3 mb-3">
+              <!-- 1. PICKER (Pick orders) -->
+              <div class="col-12 col-md-4">
+                <div @click="selectHeroTask('picker')" class="hero-task-picker h-100 d-flex justify-content-between align-items-center">
+                  <div class="d-flex align-items-center gap-3">
+                    <span class="number-circle-badge">1.</span>
+                    <div>
+                      <h5 class="fw-bolder mb-0 tracking-wide text-white">PICKER</h5>
+                      <small class="text-white-50 font-weight-bold">(Pick orders)</small>
+                    </div>
+                  </div>
+                  <i class="bi bi-chevron-right fs-4 text-white-50"></i>
+                </div>
+              </div>
+
+              <!-- 2. PUT-AWAY (New / Customer Returns) -->
+              <div class="col-12 col-md-4">
+                <div @click="selectHeroTask('putter')" class="hero-task-putaway h-100 d-flex justify-content-between align-items-center">
+                  <div class="d-flex align-items-center gap-3">
+                    <span class="number-circle-badge">2.</span>
+                    <div>
+                      <h5 class="fw-bolder mb-0 tracking-wide text-white">PUT-AWAY</h5>
+                      <small class="text-white-50 font-weight-bold">(New / Customer Returns)</small>
+                    </div>
+                  </div>
+                  <i class="bi bi-chevron-right fs-4 text-white-50"></i>
+                </div>
+              </div>
+
+              <!-- 3. TRANSFER / MOVE (Shelf Shifting & Store RTV) -->
+              <div class="col-12 col-md-4">
+                <div @click="selectHeroTask('transfer')" class="hero-task-transfer h-100 d-flex justify-content-between align-items-center">
+                  <div class="d-flex align-items-center gap-3">
+                    <span class="number-circle-badge">3.</span>
+                    <div>
+                      <h5 class="fw-bolder mb-0 tracking-wide text-white">TRANSFER / MOVE</h5>
+                      <small class="text-white-50 font-weight-bold">(Shelf Shifting & Store RTV)</small>
+                    </div>
+                  </div>
+                  <i class="bi bi-chevron-right fs-4 text-white-50"></i>
+                </div>
+              </div>
+            </div>
+
+            <!-- Additional Warehouse Stations Grid -->
+            <div class="row g-3">
+              <div class="col-12 col-md-4">
+                <button @click="selectHeroTask('packer')" class="btn btn-white w-100 bg-white border text-start p-3 rounded-4 shadow-sm h-100">
+                  <span class="badge bg-primary-subtle text-primary mb-1">Station 4</span>
+                  <h6 class="fw-bold mb-0 text-dark">Packer & Bagging</h6>
+                  <small class="text-muted d-block">Tally, Bag Seal & Dispatch Bay</small>
+                </button>
+              </div>
+
+              <div class="col-12 col-md-4">
+                <button @click="selectHeroTask('inward')" class="btn btn-white w-100 bg-white border text-start p-3 rounded-4 shadow-sm h-100">
+                  <span class="badge bg-success-subtle text-success mb-1">Station 5</span>
+                  <h6 class="fw-bold mb-0 text-dark">Inward Receiving Dock</h6>
+                  <small class="text-muted d-block">PO Cartons & Staging Pallets</small>
+                </button>
+              </div>
+
+              <div class="col-12 col-md-4">
+                <button @click="selectHeroTask('manager')" class="btn btn-dark w-100 text-start p-3 rounded-4 shadow-sm h-100 d-flex justify-content-between align-items-center">
+                  <div>
+                    <span class="badge bg-danger-subtle text-danger mb-1">Supervisor Deck</span>
+                    <h6 class="fw-bold mb-0 text-white">Floor Lead Dashboard</h6>
+                    <small class="text-white-50 d-block">Attendance PIN, Force Checkout/Logout</small>
+                  </div>
+                  <i class="bi bi-shield-lock-fill text-danger fs-3"></i>
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- ========================================================================= -->
+          <!-- SUB-TAB B: USER & WMS PROFILE (SAME AS MAJOR APP PROFILE)                 -->
+          <!-- ========================================================================= -->
+          <div v-else-if="dashboardSegment === 'profile'" class="animate-fadeInScale">
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 1: MAIN PROFILE VIEW (MATCHING MAJOR APP PROFILE)                -->
+            <!-- ===================================================================== -->
+            <div v-if="profileSubView === 'main'" class="card wms-card border-0 shadow-sm">
+              <div class="card-header bg-info text-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-person-circle me-2"></i> My Profile</h5>
+                <div>
+                  <button class="btn btn-warning btn-sm me-2 fw-semibold" @click="openProfileSubView('reset-password')">
+                    <i class="bi bi-shield-lock me-1"></i> Reset Password
+                  </button>
+                  <button class="btn btn-light btn-sm fw-semibold" @click="toggleProfileEdit">
+                    <i class="bi" :class="profileEditMode ? 'bi-x-lg' : 'bi-pencil'"></i> {{ profileEditMode ? 'Cancel' : 'Edit' }}
+                  </button>
+                </div>
+              </div>
+
+              <div class="card-body p-4">
+                <div v-if="profileLoading" class="text-center py-5">
+                  <div class="spinner-border text-info"></div>
+                  <p class="text-muted small mt-2">Loading profile details...</p>
+                </div>
+                <div v-else-if="profileError" class="alert alert-danger">{{ profileError }}</div>
+                <div v-else>
+                  <!-- Profile Image Section -->
+                  <div class="text-center mb-4 position-relative">
+                    <div class="profile-image-container mx-auto">
+                      <img :src="profileData.ProfileImageUrl || 'https://via.placeholder.com/150'" 
+                           class="rounded-circle img-thumbnail profile-img shadow-sm" 
+                           alt="Profile Image">
+                      <button class="btn btn-primary btn-sm rounded-circle position-absolute camera-btn shadow"
+                              @click="$refs.profileFileInput.click()"
+                              title="Change Profile Image">
+                        <i class="bi bi-camera"></i>
+                      </button>
+                    </div>
+                    <input type="file" ref="profileFileInput" class="d-none" accept="image/*" @change="handleProfileImageUpload">
+                    <div v-if="profileUploading" class="mt-2 text-primary small">
+                      <span class="spinner-border spinner-border-sm me-1"></span> Uploading photo...
+                    </div>
+                    <div v-if="profileUploadError" class="mt-2 text-danger small">{{ profileUploadError }}</div>
+                    <div v-if="profileUploadSuccess" class="mt-2 text-success small">{{ profileUploadSuccess }}</div>
+                  </div>
+
+                  <!-- Details View (When Not Editing) -->
+                  <div v-if="!profileEditMode">
+                    <div class="table-responsive">
+                      <table class="table table-bordered table-profile shadow-sm rounded-3">
+                        <tbody>
+                          <tr><th>ID</th><td>{{ profileData.UserID }}</td></tr>
+                          <tr><th>First Name</th><td class="fw-semibold">{{ profileData.UserNameFirst }}</td></tr>
+                          <tr><th>Last Name</th><td>{{ profileData.UserNameLast || 'Not set' }}</td></tr>
+                          <tr><th>Email</th><td>{{ profileData.Email }}</td></tr>
+                          <tr><th>Mobile</th><td>{{ profileData.Mobile || 'Not set' }}</td></tr>
+                          <tr><th>Date of Birth</th><td>{{ formatProfileDate(profileData.DOB) }}</td></tr>
+                          <tr><th>Gender</th><td class="text-capitalize">{{ profileData.Gender || 'Not set' }}</td></tr>
+                          <tr>
+                            <th>Role</th>
+                            <td>
+                              <span class="badge" :class="profileData.Role === 'admin' || profileData.Role === 'superadmin' ? 'bg-danger' : 'bg-primary'">
+                                {{ profileData.Role }}
+                              </span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <th>Active Status</th>
+                            <td>
+                              <span class="badge" :class="profileData.IsActive ? 'bg-success' : 'bg-warning text-dark'">
+                                {{ profileData.IsActive ? 'Active' : 'Inactive' }}
+                              </span>
+                            </td>
+                          </tr>
+                          <tr>
+                            <th>Assigned Location</th>
+                            <td>
+                              <span class="fw-semibold text-dark">{{ profileData.CurrentWarehouseName || 'Not Assigned' }}</span>
+                              <span v-if="profileData.CurrentStoreName && profileData.CurrentStoreName !== 'Not Assigned'" class="text-muted small">
+                                ({{ profileData.CurrentStoreName }})
+                              </span>
+                            </td>
+                          </tr>
+                          <tr><th>Joined</th><td>{{ formatProfileDate(profileData.CreatedAt) }}</td></tr>
+                        </tbody>
+                      </table>
+                    </div>
+                  </div>
+
+                  <!-- Edit Mode Form -->
+                  <form v-else @submit.prevent="saveProfile" class="animate-fadeInScale">
+                    <div v-if="profileSaveError" class="alert alert-danger small">{{ profileSaveError }}</div>
+                    <div v-if="profileSaveSuccess" class="alert alert-success small">{{ profileSaveSuccess }}</div>
+                    
+                    <div class="row g-3">
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">First Name</label>
+                        <input type="text" class="form-control" v-model="profileEditForm.UserNameFirst" required>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">Last Name</label>
+                        <input type="text" class="form-control" v-model="profileEditForm.UserNameLast">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">Email</label>
+                        <input type="email" class="form-control" v-model="profileEditForm.Email" required>
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">Mobile</label>
+                        <input type="tel" class="form-control" v-model="profileEditForm.Mobile">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">Date of Birth</label>
+                        <input type="date" class="form-control" v-model="profileEditForm.DOB">
+                      </div>
+                      <div class="col-md-6">
+                        <label class="form-label fw-bold small">Gender</label>
+                        <select class="form-select" v-model="profileEditForm.Gender">
+                          <option value="male">Male</option>
+                          <option value="female">Female</option>
+                          <option value="other">Other</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    <div class="mt-4 d-flex gap-2">
+                      <button type="submit" class="btn btn-primary fw-bold" :disabled="profileSaving">
+                        <span v-if="profileSaving" class="spinner-border spinner-border-sm me-1"></span>
+                        {{ profileSaving ? 'Saving...' : 'Save Changes' }}
+                      </button>
+                      <button type="button" class="btn btn-light" @click="toggleProfileEdit">Cancel</button>
+                    </div>
+                  </form>
+
+                  <hr class="my-4">
+
+                  <!-- 4 Major Navigation / Module Cards (Same as Major App Profile) -->
+                  <div class="d-flex justify-content-between align-items-center mb-3 p-3 bg-light rounded-4 shadow-sm border-start border-4 border-info profile-action-card"
+                       @click="openProfileSubView('bank')">
+                    <div>
+                      <h6 class="mb-1 fw-bold text-dark"><i class="bi bi-bank text-info me-2 fs-5"></i> Bank Accounts</h6>
+                      <p class="text-muted mb-0 small">Manage your linked bank accounts for payouts and identity verification.</p>
+                    </div>
+                    <button class="btn btn-outline-info btn-sm text-nowrap ms-2" type="button">
+                      Manage Accounts <i class="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+
+                  <div class="d-flex justify-content-between align-items-center mb-3 p-3 bg-light rounded-4 shadow-sm border-start border-4 border-primary profile-action-card"
+                       @click="openProfileSubView('doc')">
+                    <div>
+                      <h6 class="mb-1 fw-bold text-dark"><i class="bi bi-file-earmark-text text-primary me-2 fs-5"></i> My Documents</h6>
+                      <p class="text-muted mb-0 small">Manage your essential documents, IDs, and certificates.</p>
+                    </div>
+                    <button class="btn btn-outline-primary btn-sm text-nowrap ms-2" type="button">
+                      Manage Documents <i class="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+
+                  <div class="d-flex justify-content-between align-items-center mb-3 p-3 bg-light rounded-4 shadow-sm border-start border-4 border-warning profile-action-card"
+                       @click="openProfileSubView('nominee')">
+                    <div>
+                      <h6 class="mb-1 fw-bold text-dark"><i class="bi bi-people text-warning me-2 fs-5"></i> Nominee Details</h6>
+                      <p class="text-muted mb-0 small">Manage your nominee and emergency contact information.</p>
+                    </div>
+                    <button class="btn btn-outline-warning btn-sm text-nowrap ms-2" type="button">
+                      Manage Nominee <i class="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+
+                  <div class="d-flex justify-content-between align-items-center mb-4 p-3 bg-light rounded-4 shadow-sm border-start border-4 border-success profile-action-card"
+                       @click="openProfileSubView('location')">
+                    <div>
+                      <h6 class="mb-1 fw-bold text-dark"><i class="bi bi-geo-alt text-success me-2 fs-5"></i> Location Change</h6>
+                      <p class="text-muted mb-0 small">Request a transfer to a different warehouse or store location.</p>
+                    </div>
+                    <button class="btn btn-outline-success btn-sm text-nowrap ms-2" type="button">
+                      Request Change <i class="bi bi-chevron-right"></i>
+                    </button>
+                  </div>
+
+                  <!-- PDA Logout Button -->
+                  <button @click="logout" class="btn btn-outline-danger w-100 rounded-pill py-2 fw-bold">
+                    <i class="bi bi-box-arrow-right me-1"></i> Logout from PDA
+                  </button>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 2: BANK ACCOUNTS (MATCHING MAJOR APP BANK.JS)                    -->
+            <!-- ===================================================================== -->
+            <div v-else-if="profileSubView === 'bank'" class="card wms-card border-0 shadow-sm animate-fadeInScale">
+              <div class="card-header bg-primary text-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-bank me-2"></i> Bank Accounts</h5>
+                <button class="btn btn-light btn-sm fw-semibold" @click="openProfileSubView('main')">
+                  <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                </button>
+              </div>
+
+              <div class="card-body p-4">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+                  <p class="text-muted mb-0 small">Manage your linked bank accounts for payments and withdrawals.</p>
+                  <button class="btn btn-success btn-sm fw-bold px-3" @click="openAddBankModal">
+                    <i class="bi bi-plus-lg me-1"></i> Add New Account
+                  </button>
+                </div>
+
+                <div v-if="bankLoading" class="text-center py-5">
+                  <div class="spinner-border text-primary"></div>
+                </div>
+
+                <div v-else-if="bankAccounts.length === 0" class="text-center py-5 bg-light rounded-4 border mb-4">
+                  <i class="bi bi-bank fs-1 text-muted"></i>
+                  <p class="text-muted mt-2 mb-3">No bank accounts added yet.</p>
+                  <button class="btn btn-outline-success btn-sm fw-semibold" @click="openAddBankModal">
+                    <i class="bi bi-plus-circle me-1"></i> Add First Account
+                  </button>
+                </div>
+
+                <div v-else class="row g-3">
+                  <div v-for="bank in bankAccounts" :key="bank.BankID" class="col-12 col-md-6">
+                    <div class="card h-100 border-start border-4 rounded-3 shadow-sm"
+                         :class="bank.IsPrimary ? 'border-success' : 'border-secondary'">
+                      <div class="card-body p-3">
+                        <div class="d-flex justify-content-between align-items-start mb-2">
+                          <h6 class="card-title mb-0 fw-bold text-dark">{{ bank.BankName }}</h6>
+                          <div class="d-flex flex-column align-items-end gap-1">
+                            <span v-if="bank.IsApproved" class="badge bg-success small"><i class="bi bi-check-circle"></i> Approved</span>
+                            <span v-else class="badge bg-warning text-dark small"><i class="bi bi-clock"></i> Pending</span>
+                            <span v-if="bank.IsPrimary" class="badge bg-primary small">Primary</span>
+                          </div>
+                        </div>
+
+                        <div class="bank-details small">
+                          <div class="mb-1 d-flex justify-content-between">
+                            <span class="text-muted">Account No:</span>
+                            <span class="font-monospace fw-semibold">{{ bank.AccountNo }}</span>
+                          </div>
+                          <div class="mb-1 d-flex justify-content-between">
+                            <span class="text-muted">IFSC Code:</span>
+                            <span class="font-monospace fw-semibold">{{ bank.IFSC }}</span>
+                          </div>
+                          <div class="d-flex justify-content-between">
+                            <span class="text-muted">UPI ID:</span>
+                            <span class="font-monospace fw-semibold">{{ bank.UPI || 'None' }}</span>
+                          </div>
+                        </div>
+
+                        <div v-if="bank.BankImageUrl" class="mt-3">
+                          <a :href="bank.BankImageUrl" target="_blank" class="btn btn-outline-info btn-sm w-100">
+                            <i class="bi bi-image me-1"></i> View Document Proof
+                          </a>
+                        </div>
+
+                        <div class="mt-3 d-flex justify-content-end align-items-center">
+                          <button v-if="!bank.IsApproved" class="btn btn-outline-danger btn-sm" @click="deleteBankAccount(bank.BankID)">
+                            <i class="bi bi-trash me-1"></i> Delete
+                          </button>
+                          <span v-else class="text-muted small"><i class="bi bi-lock-fill me-1"></i> Verified & Locked</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 3: MY DOCUMENTS (MATCHING MAJOR APP DOC.JS)                      -->
+            <!-- ===================================================================== -->
+            <div v-else-if="profileSubView === 'doc'" class="card wms-card border-0 shadow-sm animate-fadeInScale">
+              <div class="card-header bg-dark text-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-file-earmark-text me-2"></i> My Documents</h5>
+                <button class="btn btn-outline-light btn-sm fw-semibold" @click="openProfileSubView('main')">
+                  <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                </button>
+              </div>
+
+              <div class="card-body p-4">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4">
+                  <p class="text-muted mb-0 small">Manage your essential documents and IDs for compliance verification.</p>
+                  <button class="btn btn-primary btn-sm fw-bold px-3" @click="openAddDocModal">
+                    <i class="bi bi-plus-lg me-1"></i> Add Document
+                  </button>
+                </div>
+
+                <div v-if="docLoading" class="text-center py-5">
+                  <div class="spinner-border text-primary"></div>
+                </div>
+
+                <div v-else-if="documents.length === 0" class="text-center py-5 bg-light rounded-4 border">
+                  <i class="bi bi-files fs-1 text-muted"></i>
+                  <p class="text-muted mt-2 mb-3">No documents uploaded yet.</p>
+                  <button class="btn btn-outline-primary btn-sm fw-semibold" @click="openAddDocModal">
+                    <i class="bi bi-plus-circle me-1"></i> Upload First Document
+                  </button>
+                </div>
+
+                <div v-else class="table-responsive">
+                  <table class="table table-hover align-middle border rounded-3">
+                    <thead class="table-light">
+                      <tr>
+                        <th>Type</th>
+                        <th>Number</th>
+                        <th class="text-center">Status</th>
+                        <th>Upload Date</th>
+                        <th class="text-center">File</th>
+                        <th class="text-end">Actions</th>
+                      </tr>
+                    </thead>
+                    <tbody>
+                      <tr v-for="doc in documents" :key="doc.DocID">
+                        <td>
+                          <span class="badge bg-info text-dark font-monospace text-uppercase">{{ doc.Type }}</span>
+                        </td>
+                        <td class="font-monospace small">{{ doc.Number || 'N/A' }}</td>
+                        <td class="text-center">
+                          <span class="badge" :class="doc.IsApproved ? 'bg-success' : 'bg-warning text-dark'">
+                            {{ doc.IsApproved ? 'Approved' : 'Pending' }}
+                          </span>
+                        </td>
+                        <td class="small">{{ formatProfileDate(doc.CreatedAt) }}</td>
+                        <td class="text-center">
+                          <a v-if="doc.ImageURL" :href="doc.ImageURL" target="_blank" class="btn btn-sm btn-outline-secondary">
+                            <i class="bi bi-eye"></i> View
+                          </a>
+                          <span v-else class="text-muted small">No file</span>
+                        </td>
+                        <td class="text-end">
+                          <button v-if="!doc.IsApproved" class="btn btn-sm btn-outline-danger" @click="deleteDocument(doc.DocID)" title="Delete">
+                            <i class="bi bi-trash"></i>
+                          </button>
+                          <span v-else class="text-muted small"><i class="bi bi-lock-fill"></i> Locked</span>
+                        </td>
+                      </tr>
+                    </tbody>
+                  </table>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 4: NOMINEE DETAILS (MATCHING MAJOR APP NOMINEE.JS)               -->
+            <!-- ===================================================================== -->
+            <div v-else-if="profileSubView === 'nominee'" class="card wms-card border-0 shadow-sm animate-fadeInScale">
+              <div class="card-header bg-warning text-dark d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-people-fill me-2"></i> Nominee Details</h5>
+                <button class="btn btn-outline-dark btn-sm rounded-pill px-3 fw-semibold" @click="openProfileSubView('main')">
+                  <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                </button>
+              </div>
+
+              <div class="card-body p-4">
+                <div class="d-flex flex-wrap justify-content-between align-items-center gap-2 mb-4 pb-3 border-bottom">
+                  <div>
+                    <h6 class="mb-0 fw-bold text-dark">Emergency & Legal Successors</h6>
+                    <small class="text-muted">Manage your emergency contacts and legal nominee information.</small>
+                  </div>
+                  <button class="btn btn-warning fw-bold px-3 rounded-pill shadow-sm" @click="openAddNomineeModal">
+                    <i class="bi bi-person-plus-fill me-1"></i> Add Nominee
+                  </button>
+                </div>
+
+                <div v-if="nomineeLoading" class="text-center py-5">
+                  <div class="spinner-border text-warning"></div>
+                </div>
+
+                <div v-else-if="nominees.length === 0" class="text-center py-5 bg-light rounded-4 border border-dashed">
+                  <i class="bi bi-person-bounding-box fs-1 text-warning opacity-75"></i>
+                  <h6 class="text-dark mt-2 mb-1">No Nominee Added</h6>
+                  <p class="text-muted small mx-auto mb-3" style="max-width: 300px;">Add a nominee for emergency situations and account safety.</p>
+                  <button class="btn btn-outline-warning btn-sm rounded-pill px-3 fw-bold" @click="openAddNomineeModal">
+                    Click here to add
+                  </button>
+                </div>
+
+                <div v-else class="row g-3">
+                  <div v-for="nominee in nominees" :key="nominee.NomineeID" class="col-12 col-md-6">
+                    <div class="card h-100 border rounded-4 shadow-sm" :class="nominee.IsApproved ? 'border-success' : 'border-secondary'">
+                      <div class="card-body p-4">
+                        <div class="d-flex justify-content-between align-items-start mb-3">
+                          <div class="d-flex align-items-center">
+                            <div class="bg-warning bg-opacity-25 text-warning p-2.5 rounded-circle me-3">
+                              <i class="bi bi-person fs-4"></i>
+                            </div>
+                            <div>
+                              <h6 class="mb-0 fw-bold text-dark">{{ nominee.NomineeName }}</h6>
+                              <span class="badge bg-light text-dark border small">{{ nominee.Relation }}</span>
+                            </div>
+                          </div>
+                          <div class="d-flex gap-1">
+                            <button class="btn btn-sm btn-outline-secondary" @click="openEditNomineeModal(nominee)" title="Edit">
+                              <i class="bi bi-pencil"></i>
+                            </button>
+                            <button v-if="!nominee.IsApproved" class="btn btn-sm btn-outline-danger" @click="deleteNominee(nominee.NomineeID)" title="Delete">
+                              <i class="bi bi-trash"></i>
+                            </button>
+                          </div>
+                        </div>
+
+                        <div class="small text-muted">
+                          <p class="mb-1 d-flex align-items-center">
+                            <i class="bi bi-phone me-2 text-primary"></i> <strong class="text-dark">{{ nominee.Phone }}</strong>
+                          </p>
+                          <p v-if="nominee.EmergencyPhone" class="mb-1 d-flex align-items-center">
+                            <i class="bi bi-telephone-plus me-2 text-danger"></i> {{ nominee.EmergencyPhone }} (Emergency)
+                          </p>
+                          <p v-if="nominee.DOB" class="mb-1 d-flex align-items-center">
+                            <i class="bi bi-calendar-event me-2"></i> {{ formatProfileDate(nominee.DOB) }}
+                          </p>
+                          <p v-if="nominee.Address" class="mb-0 d-flex align-items-start">
+                            <i class="bi bi-geo-alt me-2 mt-0.5"></i> <span class="text-truncate-2">{{ nominee.Address }}</span>
+                          </p>
+                        </div>
+
+                        <div class="mt-3 pt-3 border-top d-flex justify-content-between align-items-center">
+                          <span class="badge" :class="nominee.IsApproved ? 'bg-success' : 'bg-secondary'">
+                            {{ nominee.IsApproved ? 'Approved' : 'Pending Verification' }}
+                          </span>
+                          <span class="text-muted x-small">Added: {{ formatProfileDate(nominee.CreatedAt) }}</span>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 5: LOCATION CHANGE (MATCHING MAJOR APP USER-CHANGE-WAREHOUSE.JS)  -->
+            <!-- ===================================================================== -->
+            <div v-else-if="profileSubView === 'location'" class="card wms-card border-0 shadow-sm animate-fadeInScale">
+              <div class="card-header bg-success text-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-geo-alt-fill me-2"></i> Request Warehouse Change</h5>
+                <button class="btn btn-light btn-sm fw-semibold" @click="openProfileSubView('main')">
+                  <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                </button>
+              </div>
+
+              <div class="card-body p-4">
+                <div v-if="locationLoading" class="text-center py-5">
+                  <div class="spinner-border text-success"></div>
+                  <p class="text-muted small mt-2">Loading warehouse details...</p>
+                </div>
+                <div v-else>
+                  <div v-if="locationError" class="alert alert-danger small">{{ locationError }}</div>
+                  <div v-if="locationSuccess" class="alert alert-success small">{{ locationSuccess }}</div>
+
+                  <!-- Current Location Banner -->
+                  <div class="mb-4">
+                    <label class="form-label fw-bold small text-muted text-uppercase">Current Assigned Facility</label>
+                    <div class="p-3 bg-light rounded-3 border d-flex align-items-center gap-2">
+                      <i class="bi bi-building fs-4 text-success"></i>
+                      <div>
+                        <h6 class="mb-0 fw-bold text-dark">{{ profileData.CurrentWarehouseName || 'Not Assigned' }}</h6>
+                        <small class="text-muted" v-if="profileData.CurrentStoreName && profileData.CurrentStoreName !== 'Not Assigned'">
+                          Floor / Store: {{ profileData.CurrentStoreName }}
+                        </small>
+                      </div>
+                    </div>
+                  </div>
+
+                  <!-- Change Request Form -->
+                  <form @submit.prevent="submitLocationRequest" class="mb-4">
+                    <div class="mb-3">
+                      <label class="form-label fw-bold small">Select Destination Warehouse</label>
+                      <select class="form-select" v-model="locationForm.NewLocationID" required>
+                        <option value="" disabled>-- Select Destination Facility --</option>
+                        <option v-for="w in warehouses" :key="w.WarehouseID" :value="w.WarehouseID">
+                          {{ w.Name }} ({{ w.Type || 'Hub' }}) - {{ w.Address || 'Primary' }}
+                        </option>
+                      </select>
+                    </div>
+
+                    <div class="mb-3">
+                      <label class="form-label fw-bold small">Reason for Relocation / Shift</label>
+                      <textarea class="form-control" v-model="locationForm.Reason" rows="3"
+                                placeholder="Explain reason for your warehouse transfer request..." required></textarea>
+                    </div>
+
+                    <button type="submit" class="btn btn-success fw-bold w-100 py-2.5" :disabled="locationSubmitting || !locationForm.NewLocationID">
+                      <span v-if="locationSubmitting" class="spinner-border spinner-border-sm me-1"></span>
+                      {{ locationSubmitting ? 'Submitting Transfer Request...' : 'Submit Location Change Request' }}
+                    </button>
+                  </form>
+
+                  <hr class="my-4">
+
+                  <!-- Recent Requests List -->
+                  <h6 class="fw-bold mb-3 text-dark">Your Recent Transfer Requests</h6>
+                  <div v-if="locationRequests.length === 0" class="text-muted small fst-italic">
+                    No recent location change requests submitted.
+                  </div>
+                  <div v-else class="list-group rounded-3 shadow-sm">
+                    <div v-for="req in locationRequests" :key="req.RequestID" class="list-group-item d-flex justify-content-between align-items-center p-3">
+                      <div>
+                        <h6 class="mb-1 fw-bold text-dark">Target: {{ req.NewWarehouseName }}</h6>
+                        <small class="text-muted d-block">Reason: {{ req.Reason }}</small>
+                        <small class="text-muted">Requested on: {{ formatProfileDate(req.RequestedAt) }}</small>
+                      </div>
+                      <span class="badge rounded-pill px-3 py-1.5"
+                            :class="req.Status === 'approved' ? 'bg-success' : (req.Status === 'rejected' ? 'bg-danger' : 'bg-warning text-dark')">
+                        {{ (req.Status || 'pending').toUpperCase() }}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- VIEW 6: RESET PASSWORD (MATCHING MAJOR APP RESET-PASSWORD.JS)         -->
+            <!-- ===================================================================== -->
+            <div v-else-if="profileSubView === 'reset-password'" class="card wms-card border-0 shadow-sm animate-fadeInScale">
+              <div class="card-header bg-info text-white d-flex justify-content-between align-items-center py-3">
+                <h5 class="mb-0 fw-bold"><i class="bi bi-shield-lock me-2"></i> Reset Password</h5>
+                <button class="btn btn-light btn-sm fw-semibold" @click="openProfileSubView('main')">
+                  <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                </button>
+              </div>
+
+              <div class="card-body p-4">
+                <div v-if="passwordError" class="alert alert-danger small">{{ passwordError }}</div>
+                <div v-if="passwordSuccess" class="alert alert-success small">{{ passwordSuccess }}</div>
+
+                <form @submit.prevent="changePassword" style="max-width: 520px;" class="mx-auto">
+                  <div class="mb-3">
+                    <label class="form-label fw-bold small">Current Password</label>
+                    <input type="password" class="form-control" v-model="passwordForm.currentPassword"
+                           placeholder="Enter current password" required>
+                  </div>
+
+                  <hr class="my-3">
+
+                  <div class="mb-3">
+                    <label class="form-label fw-bold small">New Password</label>
+                    <input type="password" class="form-control" v-model="passwordForm.newPassword"
+                           placeholder="Enter new password (min. 6 characters)" required>
+                    <small class="text-muted">Minimum 6 characters</small>
+                  </div>
+
+                  <div class="mb-4">
+                    <label class="form-label fw-bold small">Confirm New Password</label>
+                    <input type="password" class="form-control" v-model="passwordForm.confirmPassword"
+                           placeholder="Confirm new password" required>
+                  </div>
+
+                  <button type="submit" class="btn btn-info w-100 text-white fw-bold py-2.5"
+                          :disabled="passwordLoading || !passwordForm.currentPassword || !passwordForm.newPassword || !passwordForm.confirmPassword">
+                    <span v-if="passwordLoading" class="spinner-border spinner-border-sm me-1"></span>
+                    {{ passwordLoading ? 'Updating Password...' : 'Update Password' }}
+                  </button>
+
+                  <div class="text-center mt-3">
+                    <button type="button" class="btn btn-link text-decoration-none small" @click="openProfileSubView('main')">
+                      <i class="bi bi-arrow-left me-1"></i> Back to Profile
+                    </button>
+                  </div>
+                </form>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- MODAL: ADD BANK ACCOUNT                                               -->
+            <!-- ===================================================================== -->
+            <div v-if="showBankModal" class="modal-backdrop fade show"></div>
+            <div v-if="showBankModal" class="modal fade show d-block" tabindex="-1">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content shadow-lg border-0 rounded-4">
+                  <div class="modal-header bg-primary text-white border-0 py-3">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-plus-circle me-2"></i> Add Bank Account</h5>
+                    <button type="button" class="btn-close btn-close-white" @click="showBankModal = false"></button>
+                  </div>
+                  <form @submit.prevent="saveBankAccount">
+                    <div class="modal-body p-4">
+                      <div v-if="bankSaveError" class="alert alert-danger small">{{ bankSaveError }}</div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Bank Name</label>
+                        <input type="text" class="form-control" v-model="bankForm.BankName" placeholder="e.g. HDFC Bank, SBI" required>
+                      </div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Account Number</label>
+                        <input type="text" class="form-control font-monospace" v-model="bankForm.AccountNo" placeholder="Enter account number" required>
+                      </div>
+
+                      <div class="row g-2 mb-3">
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">IFSC Code</label>
+                          <input type="text" class="form-control font-monospace text-uppercase" v-model="bankForm.IFSC" placeholder="SBIN0001234" required>
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">UPI ID (Optional)</label>
+                          <input type="text" class="form-control" v-model="bankForm.UPI" placeholder="mobile@upi">
+                        </div>
+                      </div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Cheque / Passbook Image Proof</label>
+                        <input type="file" class="form-control" accept="image/*" @change="handleBankProofUpload">
+                        <small v-if="bankUploadingProof" class="text-primary mt-1 d-block"><span class="spinner-border spinner-border-sm me-1"></span> Uploading proof...</small>
+                        <small v-else-if="bankForm.BankImageUrl" class="text-success mt-1 d-block"><i class="bi bi-check-circle me-1"></i> Proof file uploaded</small>
+                      </div>
+
+                      <div class="form-check">
+                        <input class="form-check-input" type="checkbox" id="wmsBankPrimary" v-model="bankForm.IsPrimary">
+                        <label class="form-check-label small" for="wmsBankPrimary">
+                          Set as Primary Settlement Account
+                        </label>
+                      </div>
+                    </div>
+                    <div class="modal-footer border-0 p-3 pt-0">
+                      <button type="button" class="btn btn-light" @click="showBankModal = false">Cancel</button>
+                      <button type="submit" class="btn btn-primary fw-bold" :disabled="bankSaving">
+                        <span v-if="bankSaving" class="spinner-border spinner-border-sm me-1"></span>
+                        {{ bankSaving ? 'Saving...' : 'Add Account' }}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- MODAL: ADD DOCUMENT                                                   -->
+            <!-- ===================================================================== -->
+            <div v-if="showDocModal" class="modal-backdrop fade show"></div>
+            <div v-if="showDocModal" class="modal fade show d-block" tabindex="-1">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content shadow-lg border-0 rounded-4">
+                  <div class="modal-header bg-dark text-white border-0 py-3">
+                    <h5 class="modal-title fw-bold"><i class="bi bi-plus-circle me-2"></i> New Document</h5>
+                    <button type="button" class="btn-close btn-close-white" @click="showDocModal = false"></button>
+                  </div>
+                  <form @submit.prevent="saveDocument">
+                    <div class="modal-body p-4">
+                      <div v-if="docSaveError" class="alert alert-danger small">{{ docSaveError }}</div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Document Type</label>
+                        <select class="form-select" v-model="docForm.Type" required>
+                          <option value="" disabled>Select Document Type</option>
+                          <option v-for="t in docTypes" :key="t" :value="t">{{ t }}</option>
+                        </select>
+                      </div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Document ID / Number (Optional)</label>
+                        <input type="text" class="form-control" v-model="docForm.Number" placeholder="e.g. 1234 5678 9012">
+                      </div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Document File / Scan</label>
+                        <input type="file" class="form-control" accept="image/*" @change="handleDocFileUpload">
+                        <small v-if="docUploadingFile" class="text-primary mt-1 d-block"><span class="spinner-border spinner-border-sm me-1"></span> Uploading document...</small>
+                        <small v-else-if="docForm.ImageURL" class="text-success mt-1 d-block"><i class="bi bi-check-circle me-1"></i> Document scan uploaded</small>
+                      </div>
+                    </div>
+                    <div class="modal-footer border-0 p-3 pt-0">
+                      <button type="button" class="btn btn-light" @click="showDocModal = false">Cancel</button>
+                      <button type="submit" class="btn btn-primary fw-bold" :disabled="docSaving">
+                        <span v-if="docSaving" class="spinner-border spinner-border-sm me-1"></span>
+                        {{ docSaving ? 'Uploading...' : 'Submit Document' }}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+            <!-- ===================================================================== -->
+            <!-- MODAL: ADD / EDIT NOMINEE                                             -->
+            <!-- ===================================================================== -->
+            <div v-if="showNomineeModal" class="modal-backdrop fade show"></div>
+            <div v-if="showNomineeModal" class="modal fade show d-block" tabindex="-1">
+              <div class="modal-dialog modal-dialog-centered">
+                <div class="modal-content shadow-lg border-0 rounded-4">
+                  <div class="modal-header bg-warning text-dark border-0 py-3">
+                    <h5 class="modal-title fw-bold">
+                      <i class="bi" :class="nomineeEditMode ? 'bi-pencil-square' : 'bi-plus-circle'"></i>
+                      {{ nomineeEditMode ? 'Edit Nominee Details' : 'Add Nominee' }}
+                    </h5>
+                    <button type="button" class="btn-close" @click="showNomineeModal = false"></button>
+                  </div>
+                  <form @submit.prevent="saveNominee">
+                    <div class="modal-body p-4">
+                      <div v-if="nomineeSaveError" class="alert alert-danger small">{{ nomineeSaveError }}</div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Nominee Full Name</label>
+                        <input type="text" class="form-control" v-model="nomineeForm.NomineeName" placeholder="Full legal name" required>
+                      </div>
+
+                      <div class="row g-2 mb-3">
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">Relation</label>
+                          <select class="form-select" v-model="nomineeForm.Relation" required>
+                            <option value="Spouse">Spouse</option>
+                            <option value="Father">Father</option>
+                            <option value="Mother">Mother</option>
+                            <option value="Son">Son</option>
+                            <option value="Daughter">Daughter</option>
+                            <option value="Brother">Brother</option>
+                            <option value="Sister">Sister</option>
+                            <option value="Other">Other</option>
+                          </select>
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">Date of Birth</label>
+                          <input type="date" class="form-control" v-model="nomineeForm.DOB">
+                        </div>
+                      </div>
+
+                      <div class="row g-2 mb-3">
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">Phone Number</label>
+                          <input type="tel" class="form-control" v-model="nomineeForm.Phone" placeholder="10-digit mobile" required>
+                        </div>
+                        <div class="col-6">
+                          <label class="form-label fw-bold small">Emergency Contact</label>
+                          <input type="tel" class="form-control" v-model="nomineeForm.EmergencyPhone" placeholder="Alternate phone">
+                        </div>
+                      </div>
+
+                      <div class="mb-3">
+                        <label class="form-label fw-bold small">Residential Address</label>
+                        <textarea class="form-control" rows="2" v-model="nomineeForm.Address" placeholder="Full residential address"></textarea>
+                      </div>
+                    </div>
+                    <div class="modal-footer border-0 p-3 pt-0">
+                      <button type="button" class="btn btn-light" @click="showNomineeModal = false">Cancel</button>
+                      <button type="submit" class="btn btn-warning fw-bold px-4" :disabled="nomineeSaving">
+                        <span v-if="nomineeSaving" class="spinner-border spinner-border-sm me-1"></span>
+                        {{ nomineeSaving ? 'Saving...' : (nomineeEditMode ? 'Update Nominee' : 'Save Nominee') }}
+                      </button>
+                    </div>
+                  </form>
+                </div>
+              </div>
+            </div>
+
+          </div>
+        </section>
+
+        <!-- ========================================================================= -->
+        <!-- ACTIVE TASK VIEW (Picker / Put-away / Transfer Task Workspaces)            -->
+        <!-- ========================================================================= -->
+        <section v-else-if="activeWorkflowStep === 'active_task'" class="animate-fadeInScale py-2">
+          <!-- Back Bar -->
+          <div class="wms-purple-header rounded-4 p-3 d-flex justify-content-between align-items-center mb-3 shadow-sm">
+            <button @click="navigateToStep('step4')" class="btn btn-link text-white text-decoration-none fw-bold small p-0">
+              <i class="bi bi-arrow-left me-1"></i> Home Dashboard
+            </button>
+            <h6 class="mb-0 fw-bold text-warning text-uppercase">
+              {{ currentTab === 'picker' ? '1. Outbound Picker' : (currentTab === 'putter' ? '2. Put-away Loader' : '3. Transfer & Move') }}
+            </h6>
+            <button @click="navigateToStep('step4')" class="btn btn-link text-white p-0">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </div>
+
+          <!-- 1. PICKER WORKFLOW -->
+          <div v-if="currentTab === 'picker'" class="space-y-3">
+            <div v-if="pickerTask" class="card wms-card border-0 shadow-sm p-4">
+              <div class="d-flex justify-content-between align-items-center border-bottom pb-2 mb-3">
+                <div>
+                  <span class="badge bg-warning text-dark font-monospace text-uppercase">PickList #{{ pickerTask.pickListId }}</span>
+                  <h5 class="fw-bold mt-1 text-dark">Order #{{ pickerTask.orderId }}</h5>
+                </div>
+                <div class="text-end">
+                  <span class="badge bg-success-subtle text-success font-monospace">Target: 60-90s</span>
+                  <div class="small text-muted mt-1">{{ pickerTask.totalPicked }} / {{ pickerTask.totalItems }} Items Picked</div>
+                </div>
+              </div>
+
+              <!-- Item Pick List -->
+              <div class="d-flex flex-column gap-2 mb-3">
+                <div v-for="item in pickerTask.items" :key="item.itemId" class="p-3 bg-light rounded-4 border">
+                  <div class="d-flex align-items-center gap-3">
+                    <img :src="item.imageUrl" class="rounded-3 border object-fit-cover bg-white" style="width: 48px; height: 48px;">
+                    <div class="flex-grow-1">
+                      <span class="badge bg-dark text-warning font-monospace"><i class="bi bi-geo-alt-fill text-danger me-1"></i>{{ item.shelfCode }}</span>
+                      <h6 class="mb-0 fw-bold text-dark mt-1">{{ item.productName }}</h6>
+                      <small class="text-muted font-monospace">SKU: {{ item.sku }} | Qty: <strong>{{ item.qtyToPick }}</strong></small>
+                    </div>
+                  </div>
+
+                  <div v-if="item.status !== 'PICKED'" class="d-flex gap-2 mt-2 pt-2 border-top">
+                    <input v-model="scanInputs[item.itemId]" @keyup.enter="scanPickItem(item)" placeholder="Scan Barcode..." class="form-control form-control-sm font-monospace">
+                    <button @click="scanPickItem(item)" class="btn btn-sm btn-success fw-bold text-dark px-3">Scan</button>
+                  </div>
+                  <div v-else class="text-success small fw-bold mt-2">
+                    <i class="bi bi-check-circle-fill me-1"></i> ITEM PICKED
+                  </div>
+                </div>
+              </div>
+
+              <button @click="completePickOrder" :disabled="pickerTask.totalPicked < pickerTask.totalItems"
+                class="btn btn-emerald w-100 py-2.5 text-uppercase">
+                Complete Order & Pick Next
+              </button>
+            </div>
+
+            <!-- Empty State -->
+            <div v-else class="card wms-card border-0 shadow-sm p-5 text-center">
+              <i class="bi bi-hourglass-split text-warning fs-1 d-block mb-2"></i>
+              <h5 class="fw-bold text-dark">No Picking Order Active</h5>
+              <p class="text-muted small mb-0">Floor Lead ya Auto-assign engine order aate hi aapko assign karega.</p>
+            </div>
+          </div>
+
+          <!-- 2. PUT-AWAY WORKFLOW -->
+          <div v-else-if="currentTab === 'putter'">
+            <div v-for="task in putawayTasks" :key="task.taskId" class="card wms-card border-0 shadow-sm p-4 mb-3">
+              <div class="d-flex justify-content-between align-items-center mb-2">
+                <span class="badge bg-info text-dark font-monospace">{{ task.palletId }}</span>
+                <span class="small fw-bold">Qty: {{ task.quantity }}</span>
+              </div>
+              <h6 class="fw-bold text-dark">{{ task.productName }}</h6>
+              <div class="bg-light p-3 rounded-4 border d-flex justify-content-between align-items-center my-2">
+                <small class="text-muted text-uppercase fw-bold">Suggested Target Bin:</small>
+                <strong class="font-monospace text-primary fs-6">{{ task.suggestedBin }}</strong>
+              </div>
+              <div class="d-flex gap-2 mt-2">
+                <input v-model="task.scannedBinInput" placeholder="Scan Target Bin..." class="form-control form-control-sm font-monospace">
+                <button @click="verifyPutawayBin(task)" class="btn btn-sm btn-primary px-3 fw-bold">Verify</button>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. TRANSFER / MOVE WORKFLOW -->
+          <div v-else-if="currentTab === 'transfer'" class="card wms-card border-0 shadow-sm p-4">
+            <h6 class="fw-bold text-uppercase mb-3">Internal Shelf Relocation</h6>
+            <form @submit.prevent="submitInternalMove" class="d-flex flex-column gap-3">
+              <select v-model="internalMoveForm.variantId" class="form-select form-select-sm">
+                <option v-for="item in inventoryItems" :key="item.variantId" :value="item.variantId">
+                  {{ item.productName }} ({{ item.sku }})
+                </option>
+              </select>
+              <div class="row g-2">
+                <div class="col-6">
+                  <input v-model="internalMoveForm.sourceShelf" required placeholder="From Bin" class="form-control form-control-sm font-monospace">
+                </div>
+                <div class="col-6">
+                  <input v-model="internalMoveForm.targetShelf" required placeholder="To Bin" class="form-control form-control-sm font-monospace">
+                </div>
+              </div>
+              <button type="submit" class="btn btn-emerald py-2 text-uppercase">Execute Shelf Move</button>
+            </form>
+          </div>
+
+          <!-- 4. PACKER TABLE -->
+          <div v-else-if="currentTab === 'packer'" class="card wms-card border-0 shadow-sm p-4">
+            <h6 class="fw-bold text-uppercase text-primary mb-2">Packing Table & Bagging Station</h6>
+            <p class="text-muted small mb-0">Tally items, scan bag seal code, scale weight, and handover to Bay.</p>
+          </div>
+
+          <!-- 5. INWARD DOCK -->
+          <div v-else-if="currentTab === 'inward'" class="card wms-card border-0 shadow-sm p-4">
+            <h6 class="fw-bold text-uppercase text-success mb-2">Inward Purchase Order Unloading</h6>
+            <p class="text-muted small mb-0">Unload Cartons from supplier trucks and tag staging pallets.</p>
+          </div>
+
+          <!-- 6. FLOOR LEAD -->
+          <div v-else-if="currentTab === 'manager'" class="card wms-card border-0 shadow-sm p-4">
+            <h6 class="fw-bold text-uppercase text-danger mb-2">Supervisor Floor Lead Deck</h6>
+            <p class="text-muted small mb-0">Staff attendance approval, 4-digit PIN generation, auto-assign trigger, and force actions.</p>
+          </div>
+        </section>
+
+      </div>
+    </main>
+
+    <!-- ========================================================================= -->
+    <!-- FIXED BOTTOM NAVIGATION BAR (Home | Packs | Task | Profile)                -->
+    <!-- ========================================================================= -->
+    <nav class="wms-fixed-bottom-dock">
+      <div class="container d-flex justify-content-around align-items-center" style="max-width: 600px;">
+        <button @click="navigateBottom('home')" class="dock-btn" :class="bottomNav === 'home' ? 'active' : ''">
+          <i class="bi bi-house-door-fill fs-5 mb-0.5"></i>
+          <span>Home</span>
+        </button>
+
+        <button @click="navigateBottom('packs')" class="dock-btn" :class="bottomNav === 'packs' ? 'active' : ''">
+          <i class="bi bi-box-seam fs-5 mb-0.5"></i>
+          <span>Packs</span>
+        </button>
+
+        <button @click="navigateBottom('tasks')" class="dock-btn" :class="bottomNav === 'tasks' ? 'active' : ''">
+          <i class="bi bi-card-checklist fs-5 mb-0.5"></i>
+          <span>Task</span>
+        </button>
+
+        <button @click="navigateBottom('profile')" class="dock-btn" :class="bottomNav === 'profile' ? 'active' : ''">
+          <i class="bi bi-person-fill fs-5 mb-0.5"></i>
+          <span>Profile</span>
+        </button>
+      </div>
+    </nav>
+
+    <!-- Real-Time Socket Toast Popup -->
+    <div v-if="toastMessage" class="toast-container position-fixed top-0 end-0 p-3 z-3">
+      <div class="toast show align-items-center text-white border-0 shadow-lg rounded-4"
+           :class="toastType === 'error' ? 'bg-danger' : 'bg-success'" role="alert">
+        <div class="d-flex">
+          <div class="toast-body d-flex align-items-center gap-2 fw-bold">
+            <i :class="toastType === 'error' ? 'bi bi-x-circle-fill fs-5' : 'bi bi-check-circle-fill fs-5'"></i>
+            <span>{{ toastMessage }}</span>
+          </div>
+          <button @click="toastMessage = null" type="button" class="btn-close btn-close-white me-2 m-auto"></button>
+        </div>
+      </div>
+    </div>
+
+  </div>
+
+  <script src="/js/api.js"></script>
+  <script src="/js/app.js"></script>
+  <!-- Bootstrap 5 Bundle JS CDN -->
+  <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.3.3/dist/js/bootstrap.bundle.min.js"></script>
+</body>
+</html>
