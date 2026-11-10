@@ -67,12 +67,17 @@ const app = createApp({
     const isLoadingFloorItems = ref(false);
     const selectedPutawayItem = ref(null);
     const candidateShelves = ref([]);
-    const shelfFilter = ref('all'); // 'all' | 'empty' | 'occupied'
+    const shelfFilter = ref('all'); // 'porana' | 'empty' | 'all'
     const selectedTargetShelf = ref(null);
     const scannedShelfInput = ref('');
     const putawayQty = ref(1);
+    const isOldQtyVerified = ref(false);
     const isSubmittingPutaway = ref(false);
     const putawaySuccessData = ref(null);
+
+    const oldShelvesList = computed(() => {
+      return candidateShelves.value.filter(s => (s.currentStockForThisItem || 0) > 0);
+    });
 
     const emptyShelvesCount = computed(() => {
       return candidateShelves.value.filter(s => s.isEmpty).length;
@@ -83,13 +88,22 @@ const app = createApp({
     });
 
     const filteredCandidateShelves = computed(() => {
+      // If item has old shelves and filter is 'porana' or default: show ONLY porana shelves ("sirf porana shelf hi dekhana")
+      if (shelfFilter.value === 'porana') {
+        return oldShelvesList.value;
+      }
       if (shelfFilter.value === 'empty') {
         return candidateShelves.value.filter(s => s.isEmpty);
       }
       if (shelfFilter.value === 'occupied') {
         return candidateShelves.value.filter(s => !s.isEmpty);
       }
-      return candidateShelves.value;
+      // If user hasn't explicitly set filter:
+      if (oldShelvesList.value.length > 0) {
+        return oldShelvesList.value;
+      }
+      // If no old shelf exists: show ⭐ Empty Shelves ("agar koi porana nahi hai tu ⭐ Empty Shelves batana")
+      return candidateShelves.value.filter(s => s.isEmpty);
     });
 
     async function fetchFloorItems() {
@@ -111,6 +125,7 @@ const app = createApp({
       scannedShelfInput.value = '';
       putawaySuccessData.value = null;
       putawayQty.value = 1;
+      isOldQtyVerified.value = false;
 
       try {
         const res = await API.request(`/api/putaway/item-details/${variantId}`);
@@ -118,6 +133,20 @@ const app = createApp({
           selectedPutawayItem.value = res.item;
           candidateShelves.value = res.shelves || [];
           putawayQty.value = Math.min(10, res.item.floorQty || 1);
+
+          // Check if old shelf exists for this item
+          const hasOld = candidateShelves.value.some(s => (s.currentStockForThisItem || 0) > 0);
+          if (hasOld) {
+            shelfFilter.value = 'porana'; // "sirf porana shelf hi dekhana"
+            // Auto select the old shelf
+            const oldShelf = candidateShelves.value.find(s => (s.currentStockForThisItem || 0) > 0);
+            if (oldShelf) {
+              selectTargetShelf(oldShelf);
+            }
+          } else {
+            shelfFilter.value = 'empty'; // "agar koi porana nahi hai tu ⭐ Empty Shelves batana"
+          }
+
           activeWorkflowStep.value = 'putaway_item';
           syncRouteHash();
         } else {
@@ -131,7 +160,15 @@ const app = createApp({
     function selectTargetShelf(shelf) {
       selectedTargetShelf.value = shelf;
       scannedShelfInput.value = shelf.shelfCode;
+      isOldQtyVerified.value = false; // Reset verification on new shelf selection
       showToast(`Selected Shelf [${shelf.shelfCode}]. Purana stock: ${shelf.currentStockForThisItem || 0}`, 'info');
+    }
+
+    function verifyOldQty() {
+      if (!selectedTargetShelf.value) return;
+      isOldQtyVerified.value = true;
+      API.playBeep(true);
+      showToast(`✅ Verified! Porana stock on ${selectedTargetShelf.value.shelfCode} is ${selectedTargetShelf.value.currentStockForThisItem || 0}`, 'success');
     }
 
     function onShelfCodeEntered() {
@@ -1976,7 +2013,10 @@ const app = createApp({
       putawaySuccessData,
       emptyShelvesCount,
       occupiedShelvesCount,
+      oldShelvesList,
       filteredCandidateShelves,
+      isOldQtyVerified,
+      verifyOldQty,
       fetchFloorItems,
       openPutawayItem,
       selectTargetShelf,
